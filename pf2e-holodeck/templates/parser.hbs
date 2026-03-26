@@ -1,0 +1,394 @@
+<div class="holodeck-container" style="display: flex; flex-direction: column; height: 100%;">
+    <div style="display: flex; gap: 5px; margin-bottom: 8px; flex: 0 0 auto;">
+        <select id="encounter-selector" style="flex: 1; background: #111; color: #eee; border: 1px solid #444; padding: 4px;">
+            <option value="current" {{#if (eq selectedEncounter 'current')}}selected{{/if}}>Current / Live Combat</option>
+            <option value="exploration" style="color: #44ff44;" {{#if (eq selectedEncounter 'exploration')}}selected{{/if}}>Live Exploration (Background)</option>
+            
+            <optgroup label="Campaign Aggregators">
+                <option value="meta" style="font-weight: bold; color: #ffaa00;" {{#if (eq selectedEncounter 'meta')}}selected{{/if}}>Campaign Combat Meta-Metrics</option>
+                <option value="meta-explore" style="font-weight: bold; color: #44ff44;" {{#if (eq selectedEncounter 'meta-explore')}}selected{{/if}}>Campaign Exploration Meta-Metrics</option>
+                {{#if isGM}}
+                <option value="meta-sim" style="font-weight: bold; color: #ff4444;" {{#if (eq selectedEncounter 'meta-sim')}}selected{{/if}}>Simulation Meta-Metrics</option>
+                {{/if}}
+            </optgroup>
+
+            <optgroup label="Combat Encounters">
+            {{#each historyKeys}}
+                <option value="{{this}}" {{#if (eq ../selectedEncounter this)}}selected{{/if}}>{{this}}</option>
+            {{/each}}
+            </optgroup>
+
+            <optgroup label="Exploration Sessions">
+            {{#each exploreKeys}}
+                <option value="{{this}}" {{#if (eq ../selectedEncounter this)}}selected{{/if}}>{{this}}</option>
+            {{/each}}
+            </optgroup>
+
+            {{#if isGM}}
+            <optgroup label="Holodeck Simulations">
+            {{#each simKeys}}
+                <option value="{{this}}" {{#if (eq ../selectedEncounter this)}}selected{{/if}}>{{this}}</option>
+            {{/each}}
+            </optgroup>
+            {{/if}}
+        </select>
+        
+        <button data-action="exportData" title="Export Campaign Data to Journal" style="flex: 0 0 35px; background: #113311; border: 1px solid #44ff44; color: #44ff44;">
+            <i class="fas fa-book"></i>
+        </button>
+
+        {{#if isGM}}
+        <button data-action="clearHistory" title="Purge archives" style="flex: 0 0 35px; background: #441111; border: 1px solid #ff4444; color: #ffaa00;">
+            <i class="fas fa-trash"></i>
+        </button>
+        {{/if}}
+    </div>
+
+    <div style="display: flex; gap: 2px; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; flex: 0 0 auto;">
+        <button data-action="setViewMode" data-mode="source" style="flex: 1; background: {{#if (eq viewMode 'source')}}#44aaff{{else}}#222{{/if}}; color: {{#if (eq viewMode 'source')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;">
+            <i class="fas fa-user"></i> Actors
+        </button>
+        {{#unless isExploration}}
+        <button data-action="setViewMode" data-mode="target" style="flex: 1; background: {{#if (eq viewMode 'target')}}#ff4444{{else}}#222{{/if}}; color: {{#if (eq viewMode 'target')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;">
+            <i class="fas fa-bullseye"></i> Targets
+        </button>
+        {{/unless}}
+        <button data-action="setViewMode" data-mode="time" style="flex: 1; background: {{#if (eq viewMode 'time')}}#ffaa00{{else}}#222{{/if}}; color: {{#if (eq viewMode 'time')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;">
+            <i class="fas fa-stream"></i> Timeline
+        </button>
+    </div>
+
+    <div style="flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; min-height: 0; padding-right: 5px;">
+        {{#if hasData}}
+            
+            {{#if (eq viewMode 'source')}}
+                {{#if pcs.length}}
+                <div style="background: linear-gradient(90deg, #1a2a3a 0%, #111 100%); border-left: 3px solid #44aaff; padding: 4px 8px; margin: 10px 0 5px 0; font-weight: bold; color: #fff; font-family: 'Signika', sans-serif;">
+                    <i class="fas fa-users" style="color: #44aaff; margin-right: 5px;"></i> Party & Allies
+                </div>
+                {{#each pcs}}
+                <details data-actor="{{name}}" style="border: 1px solid #333; margin-bottom: 8px; background: rgba(15, 15, 20, 0.9); cursor: pointer; box-shadow: 0 0 5px rgba(0,0,0,0.5);" {{#if (lookup ../expanded name)}}open{{/if}}>
+                    <summary style="padding: 8px; list-style: none; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                        <div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 4px; color: #eee;">
+                            <span><i class="fas fa-caret-down" style="color: #666; margin-right: 5px;"></i>{{name}}</span>
+                            <span>
+                                {{#if ../isExploration}}
+                                    <span style="color: #fff;">{{totalChecks}} Checks Rolled</span> 
+                                    {{#if heroPoints}}<span style="color: #ffcc00; margin-left: 5px;">| {{heroPoints}} Hero Pts</span>{{/if}}
+                                {{else}}
+                                    <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span> 
+                                    {{#if healingDealt}}<span style="color: #44ff44; margin-left: 5px;">| {{healingDealt}} HEAL</span>{{/if}}
+                                {{/if}}
+                            </span>
+                        </div>
+
+                        {{#if ../isExploration}}
+                        <div style="width: 100%; background: #111; height: 14px; margin-bottom: 4px; border-radius: 2px; border: 1px solid #000;">
+                            <div style="width: {{successRate}}%; background: linear-gradient(90deg, #22aa55 0%, #44ff44 100%); height: 100%; border-radius: 1px;" title="Success Rate"></div>
+                        </div>
+                        {{else}}
+                        <div style="width: 100%; background: #111; height: 14px; margin-bottom: 4px; border-radius: 2px; border: 1px solid #000;">
+                            <div style="width: {{damagePercent}}%; background: linear-gradient(90deg, #2255aa 0%, #44aaff 100%); height: 100%; border-radius: 1px;"></div>
+                        </div>
+                        {{/if}}
+
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #999; margin-bottom: 2px;">
+                            <span>Acc: <span style="color: #ccc;">{{accuracy}}%</span> | <i class="fas fa-dice-d20" style="color:#ffcc00;"></i> {{nat20s}} | <i class="fas fa-dice-d20" style="color:#ff6666;"></i> {{nat1s}}</span>
+                            {{#if isGM}}
+                            <span style="color: #ffaa00;">{{crits}}C / {{hits}}H / {{misses}}M / {{critMisses}}F</span>
+                            {{/if}}
+                        </div>
+                        
+                        {{#unless ../isExploration}}
+                        <div style="font-size: 0.75em; color: #888;">
+                            <span title="Killing Blows"><i class="fas fa-skull" style="color:#888;"></i> {{kills}}</span> &nbsp;|&nbsp; 
+                            <span title="Mitigated Damage (Shield Blocks/Resistances)"><i class="fas fa-shield-alt" style="color:#888;"></i> {{mitigated}} Blocked</span> &nbsp;|&nbsp; 
+                            <span title="Hero Points Used"><i class="fas fa-star" style="color:#ffcc00;"></i> {{heroPoints}} Used</span>
+                        </div>
+                        {{/unless}}
+                    </summary>
+                    
+                    <div style="background: rgba(0, 0, 0, 0.7);">
+                        <div style="padding: 10px; border-bottom: 1px dashed #444;">
+                            <div style="display: flex; height: 60px; align-items: flex-end; gap: 2px; border-bottom: 1px solid #555; padding-bottom: 2px; margin-top: 5px;">
+                                {{#each d20Graph}}
+                                <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative;" title="Rolled {{value}}: {{count}} times">
+                                    <span style="font-size: 0.8em; color: #ccc; position: absolute; top: -16px;">{{#if count}}{{count}}{{/if}}</span>
+                                    <div style="width: 100%; background: {{color}}; height: {{#if height}}{{height}}{{else}}1{{/if}}%; border-radius: 2px 2px 0 0; min-height: 2px;"></div>
+                                </div>
+                                {{/each}}
+                            </div>
+                            <div style="display: flex; gap: 2px; font-size: 0.75em; color: #888; padding-top: 4px; text-align: center; font-weight: bold;">
+                                {{#each d20Graph}}<div style="flex: 1;">{{value}}</div>{{/each}}
+                            </div>
+
+                            {{#if ../isExploration}}
+                            <div style="display: flex; justify-content: space-between; font-size: 0.85em; margin-top: 12px; border-top: 1px dashed #333; padding-top: 8px;">
+                                <div style="text-align: center; flex: 1;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Favored d20</div>
+                                    <div style="color: #ffaa00; font-weight: bold; font-size: 1.1em;">{{mostRolledNumber}}</div>
+                                </div>
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Total Checks</div>
+                                    <div style="color: #44aaff; font-weight: bold; font-size: 1.1em;">{{totalChecks}}</div>
+                                </div>
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Success Rate</div>
+                                    <div style="color: #44ff44; font-weight: bold; font-size: 1.1em;">{{successRate}}%</div>
+                                </div>
+                                {{#if crits}}
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Crit Successes</div>
+                                    <div style="color: #ffcc00; font-weight: bold; font-size: 1.1em;">{{crits}}</div>
+                                </div>
+                                {{/if}}
+                            </div>
+                            {{else}}
+                            <div style="display: flex; justify-content: space-between; font-size: 0.85em; margin-top: 12px; border-top: 1px dashed #333; padding-top: 8px;">
+                                <div style="text-align: center; flex: 1;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Favored d20</div>
+                                    <div style="color: #ffaa00; font-weight: bold; font-size: 1.1em;">{{mostRolledNumber}}</div>
+                                </div>
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Best Single Action</div>
+                                    <div style="color: #44aaff; font-weight: bold; font-size: 1.1em;">{{maxDamageDealt}} DMG</div>
+                                </div>
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Hardest Hit Taken</div>
+                                    <div style="color: #ff6666; font-weight: bold; font-size: 1.1em;">{{maxDamageTaken}} DMG</div>
+                                </div>
+                                {{#if maxHealDealt}}
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Biggest Heal</div>
+                                    <div style="color: #44ff44; font-weight: bold; font-size: 1.1em;">{{maxHealDealt}} HP</div>
+                                </div>
+                                {{/if}}
+                                {{#if heroPointCrits}}
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Clutch Crits</div>
+                                    <div style="color: #ffcc00; font-weight: bold; font-size: 1.1em;">{{heroPointCrits}} <i class="fas fa-star" style="font-size:0.8em;"></i></div>
+                                </div>
+                                {{/if}}
+                            </div>
+                            {{/if}}
+                        </div>
+
+                        <div style="max-height: 200px; overflow-y: auto;">
+                            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85em;">
+                                <thead style="background: rgba(20, 20, 25, 0.9); border-bottom: 2px solid #444;">
+                                    <tr style="color: #888; text-transform: uppercase;">
+                                        <th style="padding: 6px;">Rnd</th><th style="padding: 6px;">Target</th><th style="padding: 6px;">Action</th><th style="padding: 6px; text-align: right;">Result</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {{#each history}}
+                                    <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
+                                        <td style="padding: 6px; color: #777;">{{round}}</td>
+                                        <td style="padding: 6px; color: #aaa;">{{target}}</td>
+                                        <td style="padding: 6px; color: #ddd;">{{name}}</td>
+                                        <td style="padding: 6px; text-align: right; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">{{{result}}}</td>
+                                    </tr>
+                                    {{/each}}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </details>
+                {{/each}}
+                {{/if}}
+
+                {{#if npcs.length}}
+                <div style="background: linear-gradient(90deg, #3a1a1a 0%, #111 100%); border-left: 3px solid #ff4444; padding: 4px 8px; margin: 10px 0 5px 0; font-weight: bold; color: #fff;">
+                    <i class="fas fa-skull" style="color: #ff4444; margin-right: 5px;"></i> Enemies & Monsters
+                </div>
+                {{#each npcs}}
+                <details data-actor="{{name}}" style="border: 1px solid #333; margin-bottom: 8px; background: rgba(15, 15, 20, 0.9); cursor: pointer; box-shadow: 0 0 5px rgba(0,0,0,0.5);" {{#if (lookup ../expanded name)}}open{{/if}}>
+                    <summary style="padding: 8px; list-style: none; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                        <div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 4px; color: #eee;">
+                            <span><i class="fas fa-caret-down" style="color: #666; margin-right: 5px;"></i>{{name}}</span>
+                            <span>
+                                {{#if ../isExploration}}
+                                    <span style="color: #fff;">{{totalChecks}} Checks Rolled</span>
+                                {{else}}
+                                    <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span>
+                                    {{#if healingDealt}}<span style="color: #44ff44; margin-left: 5px;">| {{healingDealt}} HEAL</span>{{/if}}
+                                {{/if}}
+                            </span>
+                        </div>
+
+                        {{#if ../isExploration}}
+                        <div style="width: 100%; background: #111; height: 14px; margin-bottom: 4px; border-radius: 2px; border: 1px solid #000;">
+                            <div style="width: {{successRate}}%; background: linear-gradient(90deg, #aa8822 0%, #ffcc00 100%); height: 100%; border-radius: 1px;" title="Success Rate"></div>
+                        </div>
+                        {{else}}
+                        <div style="width: 100%; background: #111; height: 14px; margin-bottom: 4px; border-radius: 2px; border: 1px solid #000;">
+                            <div style="width: {{damagePercent}}%; background: linear-gradient(90deg, #aa2222 0%, #ff4444 100%); height: 100%; border-radius: 1px;"></div>
+                        </div>
+                        {{/if}}
+
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #999; margin-bottom: 2px;">
+                            <span>Acc: <span style="color: #ccc;">{{accuracy}}%</span> | <i class="fas fa-dice-d20" style="color:#ffcc00;"></i> {{nat20s}} | <i class="fas fa-dice-d20" style="color:#ff6666;"></i> {{nat1s}}</span>
+                            {{#if isGM}}
+                            <span style="color: #ffaa00;">{{crits}}C / {{hits}}H / {{misses}}M / {{critMisses}}F</span>
+                            {{/if}}
+                        </div>
+                        
+                        {{#unless ../isExploration}}
+                        <div style="font-size: 0.75em; color: #888;">
+                            <span title="Killing Blows"><i class="fas fa-skull" style="color:#888;"></i> {{kills}}</span> &nbsp;|&nbsp; 
+                            <span title="Mitigated Damage (Shield Blocks/Resistances)"><i class="fas fa-shield-alt" style="color:#888;"></i> {{mitigated}} Blocked</span>
+                        </div>
+                        {{/unless}}
+                    </summary>
+                    
+                    <div style="background: rgba(0, 0, 0, 0.7);">
+                        <div style="padding: 10px; border-bottom: 1px dashed #444;">
+                            <div style="display: flex; height: 60px; align-items: flex-end; gap: 2px; border-bottom: 1px solid #555; padding-bottom: 2px; margin-top: 5px;">
+                                {{#each d20Graph}}
+                                <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative;" title="Rolled {{value}}: {{count}} times">
+                                    <span style="font-size: 0.8em; color: #ccc; position: absolute; top: -16px;">{{#if count}}{{count}}{{/if}}</span>
+                                    <div style="width: 100%; background: {{color}}; height: {{#if height}}{{height}}{{else}}1{{/if}}%; border-radius: 2px 2px 0 0; min-height: 2px;"></div>
+                                </div>
+                                {{/each}}
+                            </div>
+                            <div style="display: flex; gap: 2px; font-size: 0.75em; color: #888; padding-top: 4px; text-align: center; font-weight: bold;">
+                                {{#each d20Graph}}<div style="flex: 1;">{{value}}</div>{{/each}}
+                            </div>
+
+                            {{#if ../isExploration}}
+                            <div style="display: flex; justify-content: space-between; font-size: 0.85em; margin-top: 12px; border-top: 1px dashed #333; padding-top: 8px;">
+                                <div style="text-align: center; flex: 1;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Favored d20</div>
+                                    <div style="color: #ffaa00; font-weight: bold; font-size: 1.1em;">{{mostRolledNumber}}</div>
+                                </div>
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Total Checks</div>
+                                    <div style="color: #44aaff; font-weight: bold; font-size: 1.1em;">{{totalChecks}}</div>
+                                </div>
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Success Rate</div>
+                                    <div style="color: #44ff44; font-weight: bold; font-size: 1.1em;">{{successRate}}%</div>
+                                </div>
+                            </div>
+                            {{else}}
+                            <div style="display: flex; justify-content: space-between; font-size: 0.85em; margin-top: 12px; border-top: 1px dashed #333; padding-top: 8px;">
+                                <div style="text-align: center; flex: 1;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Favored d20</div>
+                                    <div style="color: #ffaa00; font-weight: bold; font-size: 1.1em;">{{mostRolledNumber}}</div>
+                                </div>
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Best Single Action</div>
+                                    <div style="color: #44aaff; font-weight: bold; font-size: 1.1em;">{{maxDamageDealt}} DMG</div>
+                                </div>
+                                <div style="text-align: center; flex: 1; border-left: 1px solid #333;">
+                                    <div style="color: #666; font-size: 0.75em; text-transform: uppercase;">Hardest Hit Taken</div>
+                                    <div style="color: #ff6666; font-weight: bold; font-size: 1.1em;">{{maxDamageTaken}} DMG</div>
+                                </div>
+                            </div>
+                            {{/if}}
+                        </div>
+
+                        <div style="max-height: 200px; overflow-y: auto;">
+                            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85em;">
+                                <thead style="background: rgba(20, 20, 25, 0.9); border-bottom: 2px solid #444;">
+                                    <tr style="color: #888; text-transform: uppercase;">
+                                        <th style="padding: 6px;">Rnd</th><th style="padding: 6px;">Target</th><th style="padding: 6px;">Action</th><th style="padding: 6px; text-align: right;">Result</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {{#each history}}
+                                    <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
+                                        <td style="padding: 6px; color: #777;">{{round}}</td>
+                                        <td style="padding: 6px; color: #aaa;">{{target}}</td>
+                                        <td style="padding: 6px; color: #ddd;">{{name}}</td>
+                                        <td style="padding: 6px; text-align: right; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">{{{result}}}</td>
+                                    </tr>
+                                    {{/each}}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </details>
+                {{/each}}
+                {{/if}}
+            {{/if}}
+
+            {{#if (eq viewMode 'target')}}
+                {{#each targets}}
+                <details data-actor="{{name}}" style="border: 1px solid #333; margin-bottom: 8px; background: rgba(15, 15, 20, 0.9); cursor: pointer;" {{#if (lookup ../expanded name)}}open{{/if}}>
+                    <summary style="padding: 8px; list-style: none;">
+                        <div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 4px; color: #eee;">
+                            <span><i class="fas fa-caret-down" style="color: #666; margin-right: 5px;"></i>{{name}}</span>
+                            <span>
+                                <span style="color: #ff6666;">{{damageTaken}} DMG Recv</span>
+                                {{#if healingTaken}}<span style="color: #44ff44; margin-left: 5px;">| {{healingTaken}} HEAL</span>{{/if}}
+                            </span>
+                        </div>
+                        <div style="width: 100%; background: #111; height: 10px; border-radius: 2px;">
+                            <div style="width: {{damagePercent}}%; background: #882222; height: 100%;"></div>
+                        </div>
+                    </summary>
+                    <div style="max-height: 250px; overflow-y: auto; background: rgba(0, 0, 0, 0.7);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85em;">
+                            <thead style="background: rgba(20, 20, 25, 0.9); border-bottom: 2px solid #444;">
+                                <tr style="color: #888; text-transform: uppercase;">
+                                    <th style="padding: 6px;">Rnd</th><th style="padding: 6px;">Source</th><th style="padding: 6px;">Action</th><th style="padding: 6px; text-align: right;">Impact</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {{#each history}}
+                                <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
+                                    <td style="padding: 6px; color: #777;">{{round}}</td>
+                                    <td style="padding: 6px; color: #44aaff;">{{source}}</td>
+                                    <td style="padding: 6px; color: #ddd;">{{name}}</td>
+                                    <td style="padding: 6px; text-align: right; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">{{{result}}}</td>
+                                </tr>
+                                {{/each}}
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+                {{/each}}
+            {{/if}}
+
+            {{#if (eq viewMode 'time')}}
+                <div style="background: rgba(10, 10, 15, 0.9); border: 1px solid #333;">
+                    <div style="display: flex; background: #111; border-bottom: 2px solid #444; position: sticky; top: 0; color: #888; text-transform: uppercase; font-size: 0.85em; font-weight: bold; padding: 6px 12px; z-index: 10;">
+                        <div style="flex: 0 0 10%;">Rnd</div>
+                        <div style="flex: 0 0 25%;">Source</div>
+                        <div style="flex: 0 0 25%;">Target</div>
+                        <div style="flex: 1; text-align: right;">Result</div>
+                    </div>
+
+                    {{#each masterLog}}
+                        {{#if isDivider}}
+                            <div style="background: #222; color: #ffaa00; font-weight: bold; padding: 6px 12px; text-align: center; border-bottom: 1px solid #444; border-top: 1px solid #444; margin-top: 5px; font-size: 0.85em; text-transform: uppercase;">
+                                Archive Encounter: {{encounterName}}
+                            </div>
+                        {{else}}
+                            <details style="border-bottom: 1px solid rgba(255, 255, 255, 0.05); background: linear-gradient(90deg, rgba(30,30,35,0.4) 0%, rgba(15,15,20,0.2) 100%); cursor: pointer; font-size: 0.85em;">
+                                <summary style="display: flex; list-style: none; padding: 8px 12px; align-items: center;">
+                                    <div style="flex: 0 0 10%; color: #777;">{{round}}</div>
+                                    <div style="flex: 0 0 25%; color: #44aaff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{source}}</div>
+                                    <div style="flex: 0 0 25%; color: {{#if (eq type 'Heal')}}#44ff44{{else if (eq target 'None')}}#888{{else}}#ff6666{{/if}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{target}}</div>
+                                    <div style="flex: 1; text-align: right; font-weight: bold; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">
+                                        {{{result}}}
+                                    </div>
+                                </summary>
+                                <div style="padding: 8px 12px; background: rgba(0,0,0,0.6); color: #ccc; border-top: 1px dashed #444; font-family: monospace;">
+                                    <div style="margin-bottom: 4px;"><span style="color: #888;">Action:</span> {{name}}</div>
+                                    <div>{{{detail}}}</div>
+                                </div>
+                            </details>
+                        {{/if}}
+                    {{/each}}
+                </div>
+            {{/if}}
+
+        {{else}}
+            <div style="text-align: center; color: #888; padding: 20px;">
+                No data recorded in the current timeline.
+            </div>
+        {{/if}}
+    </div>
+</div>
