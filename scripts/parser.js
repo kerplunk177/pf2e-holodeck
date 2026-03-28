@@ -23,16 +23,17 @@ window.CombatParser = {
             if (master) return master.name;
         }
         
-        // 2. Check naming convention (for Warpgate Summons) with a fuzzy PC search
+        // 2. Check naming convention, falling back to token alias if the sheet is generically named
         let checkName = actorName;
         if (tokenAlias && tokenAlias.match(/^(.+?)'s /i)) checkName = tokenAlias;
 
         let match = checkName.match(/^(.+?)'s /i);
         if (match) {
             let possibleName = match[1].toLowerCase();
+            // Fuzzy search the actor directory for a PC whose canonical name contains the prefix
             let masterActor = game.actors.contents.find(a => 
                 (a.type === "character" || a.hasPlayerOwner) && 
-                a.id !== actorDoc?.id && 
+                a.id !== actorDoc?.id && // SECURITY LOCK: Do not allow a PC-sheet minion to claim itself!
                 a.name.toLowerCase().includes(possibleName)
             );
             if (masterActor) return masterActor.name;
@@ -831,6 +832,11 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
         let enemyTurnTotalSeconds = 0;
         let enemyTurnCount = 0;
 
+        // TOTAL TIME AGGREGATION ARRAYS
+        let totalCombatTimeSeconds = 0;
+        let pcTimeMap = {};
+        let gmTimeTotal = 0;
+
         Object.values(activeLedger.actors).forEach(a => {
             const rawRolls = a.d20Rolls || Array(20).fill(0);
             
@@ -856,6 +862,8 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             const successRate = accuracy; 
             const totalChecks = Math.max(totalAttacks, totalD20sRolled);
 
+            let isAlly = a.isAlly || a.type === "character" || a.type === "familiar";
+
             let tSum = 0;
             let tCount = 0;
             let maxTime = 0;
@@ -866,6 +874,15 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     if (s > maxTime) maxTime = s;
                 });
             }
+            
+            totalCombatTimeSeconds += tSum;
+            if (isAlly) {
+                pcTimeMap[a.name] = (pcTimeMap[a.name] || 0) + tSum;
+            } else {
+                gmTimeTotal += tSum;
+            }
+
+            let totalTurnTimeStr = formatTime(tSum);
             let avgTurnTimeStr = tCount > 0 ? formatTime(Math.round(tSum/tCount)) : "0s";
             let maxTurnTimeStr = maxTime > 0 ? formatTime(maxTime) : "0s";
 
@@ -917,8 +934,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 rawRolls.forEach((count, idx) => { if (count === maxRollCount) frequentRolls.push(idx + 1); });
                 mostRolledNumber = frequentRolls.join(', ');
             }
-
-            let isAlly = a.isAlly || a.type === "character" || a.type === "familiar";
             
             if (isAlly) {
                 partyActualDmg += (a.actualDamageRoll || 0);
@@ -946,7 +961,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 
             const combatantData = { 
                 ...a, damagePercent, dpr, healingDealt: a.healingDealt || 0, accuracy, d20Graph, 
-                maxDamageDealt, maxDamageTaken, maxHealDealt, avgD20Display, totalChecks, successRate, avgTurnTimeStr, maxTurnTimeStr, isAlly
+                maxDamageDealt, maxDamageTaken, maxHealDealt, avgD20Display, totalChecks, successRate, totalTurnTimeStr, avgTurnTimeStr, maxTurnTimeStr, isAlly
             };
             
             if (isAlly) pcs.push(combatantData);
@@ -963,11 +978,51 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 name: a.name, 
                 isParty: a.isAlly, 
                 logs: aLogs,
+                totalTurnTimeStr: a.totalTurnTimeStr,
                 avgTurnTimeStr: a.avgTurnTimeStr,
                 maxTurnTimeStr: a.maxTurnTimeStr
             });
         });
         actorGroups.sort((a, b) => b.isParty - a.isParty);
+
+        // TIME DISTRIBUTION PIE CHART GENERATOR
+        let timeEntries = [];
+        if (gmTimeTotal > 0) timeEntries.push({ name: "GM / Enemies", time: gmTimeTotal, color: "#ff4444" });
+        let pcColors = ["#44aaff", "#44ffaa", "#ffff44", "#aa44ff", "#ffaa00", "#ff44aa", "#44ffff", "#ffffff"];
+        let pColorIdx = 0;
+        
+        Object.entries(pcTimeMap).sort((a,b) => b[1] - a[1]).forEach(([name, time]) => {
+            if (time > 0) {
+                timeEntries.push({ name: name, time: time, color: pcColors[pColorIdx % pcColors.length] });
+                pColorIdx++;
+            }
+        });
+
+        let timePieSlices = [];
+        let timeLegendItems = [];
+        let timeCumulativeAngle = 0;
+
+        if (totalCombatTimeSeconds > 0) {
+            timeEntries.forEach(entry => {
+                let pctTime = (entry.time / totalCombatTimeSeconds) * 100;
+                let tooltip = `${entry.name} | Total Time: ${formatTime(entry.time)} (${pctTime.toFixed(1)}%)`;
+                let sliceAngle = (entry.time / totalCombatTimeSeconds) * (Math.PI * 2);
+
+                if (entry.time === totalCombatTimeSeconds) {
+                    timePieSlices.push({ isFull: true, color: entry.color, tooltip });
+                } else {
+                    let startX = 50 + 50 * Math.cos(timeCumulativeAngle);
+                    let startY = 50 + 50 * Math.sin(timeCumulativeAngle);
+                    timeCumulativeAngle += sliceAngle;
+                    let endX = 50 + 50 * Math.cos(timeCumulativeAngle);
+                    let endY = 50 + 50 * Math.sin(timeCumulativeAngle);
+                    let largeArc = sliceAngle > Math.PI ? 1 : 0;
+                    let path = `M 50 50 L ${startX} ${startY} A 50 50 0 ${largeArc} 1 ${endX} ${endY} Z`;
+                    timePieSlices.push({ isFull: false, path, color: entry.color, tooltip });
+                }
+                timeLegendItems.push({ name: entry.name, color: entry.color, tooltip, formattedTime: formatTime(entry.time) });
+            });
+        }
 
         let partyPaceStr = partyTurnCount > 0 ? formatTime(Math.round(partyTurnTotalSeconds/partyTurnCount)) : "N/A";
         let enemyPaceStr = enemyTurnCount > 0 ? formatTime(Math.round(enemyTurnTotalSeconds/enemyTurnCount)) : "N/A";
@@ -1076,7 +1131,8 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             expandedLogs: this.expandedLogs || {}, expandedActors: this.expandedActors || {},
             stats: {
                 partyCount: pcsObj.length, enemyCount: npcsObj.length,
-                partyActions, enemyActions, difficultyStr, diffColor, partyLevel, partySize, totalXP
+                partyActions, enemyActions, difficultyStr, diffColor, partyLevel, partySize, totalXP,
+                totalEncounterTimeStr: formatTime(totalCombatTimeSeconds)
             },
             pitBoss: {
                 luckiestName: luckiest.avg > 0 ? luckiest.name : "N/A",
@@ -1087,7 +1143,8 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 partySkewColor: partySkew > 0 ? "#44ff44" : (partySkew < 0 ? "#ff6666" : "#888"),
                 enemySkewStr: enemySkew > 0 ? `+${enemySkew}%` : `${enemySkew}%`,
                 enemySkewColor: enemySkew > 0 ? "#44ff44" : (enemySkew < 0 ? "#ff6666" : "#888"),
-                pieSlices, legendItems, partyPaceStr, enemyPaceStr
+                pieSlices, legendItems, partyPaceStr, enemyPaceStr,
+                timePieSlices, timeLegendItems
             },
             graph: {
                 partyPoints: partyPoints.join(" "), enemyPoints: enemyPoints.join(" "),
@@ -1263,7 +1320,7 @@ Hooks.on('renderCombatTracker', (app, html) => {
     const btn = document.createElement('button');
     btn.className = "combat-forensics-btn";
     btn.style.cssText = "flex: 1; background: rgba(0, 0, 0, 0.5); border: 1px solid #ffaa00; color: #eee; text-shadow: 0 0 5px #000;";
-    btn.innerHTML = '<i class="fas fa-microscope"></i> Combat Forensics';
+    btn.innerHTML = '<i class="fas fa-microscope"></i> Forensics';
     btn.addEventListener('click', () => {
         if (!window.combatForensicsInstance) window.combatForensicsInstance = new window.CombatForensicsApp();
         window.combatForensicsInstance.render({force: true});

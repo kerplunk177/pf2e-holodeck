@@ -8,7 +8,7 @@
 
     <div style="flex: 0 0 auto; border-bottom: 2px solid #ff4444; padding-bottom: 10px; margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px;">
-            <h2 style="margin: 0; color: #ffaa00; font-family: 'Signika', sans-serif;"><i class="fas fa-microscope"></i> Combat Forensics</h2>
+            <h2 style="margin: 0; color: #ffaa00; font-family: 'Signika', sans-serif;"><i class="fas fa-microscope"></i> Forensics</h2>
             
             <div style="display: flex; gap: 5px;">
                 <select id="analytics-selector" style="width: 300px; background: #111; color: #eee; border: 1px solid #ff4444; padding: 4px;">
@@ -49,15 +49,16 @@
             {{#if isGM}}
                 Expected Difficulty: <span style="color: {{stats.diffColor}}; font-weight: bold;" data-tooltip="Party Lvl {{stats.partyLevel}} | {{stats.partySize}} PCs | {{stats.totalXP}} XP Budget">{{stats.difficultyStr}}</span> | 
             {{/if}}
-            Active Combatants: <span style="color: #44aaff; font-weight: bold;">{{stats.partyCount}} Party</span> {{#if isGM}}vs <span style="color: #ff4444; font-weight: bold;">{{stats.enemyCount}} Enemy</span>{{/if}} | 
-            Total Actions: <span style="color: #fff;">{{stats.partyActions}}{{#if isGM}} vs {{stats.enemyActions}}{{/if}}</span>
+            Active Individuals: <span style="color: #44aaff; font-weight: bold;">{{stats.partyCount}} Party</span> {{#if isGM}}vs <span style="color: #ff4444; font-weight: bold;">{{stats.enemyCount}} Enemy</span>{{/if}} | 
+            Total Actions: <span style="color: #fff;">{{stats.partyActions}}{{#if isGM}} vs {{stats.enemyActions}}{{/if}}</span> |
+            Active Time: <span style="color: #ffaa00; font-weight: bold;">{{stats.totalEncounterTimeStr}}</span>
         </div>
     </div>
 
     <div style="display: flex; gap: 2px; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; flex: 0 0 auto;">
         <button data-action="setViewMode" data-mode="overview" style="flex: 1; background: {{#if (eq viewMode 'overview')}}#44aaff{{else}}#222{{/if}}; color: {{#if (eq viewMode 'overview')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;"><i class="fas fa-chart-pie"></i> Overview</button>
         <button data-action="setViewMode" data-mode="time" style="flex: 1; background: {{#if (eq viewMode 'time')}}#ffaa00{{else}}#222{{/if}}; color: {{#if (eq viewMode 'time')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;"><i class="fas fa-stream"></i> Timeline</button>
-        <button data-action="setViewMode" data-mode="actor" style="flex: 1; background: {{#if (eq viewMode 'actor')}}#ff4444{{else}}#222{{/if}}; color: {{#if (eq viewMode 'actor')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;"><i class="fas fa-users"></i> Combatants</button>
+        <button data-action="setViewMode" data-mode="actor" style="flex: 1; background: {{#if (eq viewMode 'actor')}}#ff4444{{else}}#222{{/if}}; color: {{#if (eq viewMode 'actor')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;"><i class="fas fa-users"></i> Individuals</button>
     </div>
 
     <div style="flex: 1 1 auto; overflow-y: auto; padding-right: 5px;">
@@ -136,37 +137,66 @@
                             </div>
                         </div>
 
-                        <div style="background: rgba(0,0,0,0.5); padding: 12px; border-radius: 3px; border: 1px dashed #333; display: flex; flex-direction: column;">
-                            <div style="color: #888; font-size: 0.75em; text-transform: uppercase; margin-bottom: 10px; text-align: center;">Enemy Elements</div>
-                            
-                            {{#if pitBoss.pieSlices.length}}
-                            <div style="display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 20px;">
-                                <div style="width: 100px; height: 100px; flex-shrink: 0;">
-                                    <svg viewBox="0 0 100 100" style="width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible;">
-                                        {{#each pitBoss.pieSlices}}
-                                            {{#if isFull}}
-                                                <circle cx="50" cy="50" r="50" fill="{{color}}" data-tooltip="{{tooltip}}" style="cursor: help; outline: none;"></circle>
-                                            {{else}}
-                                                <path d="{{path}}" fill="{{color}}" data-tooltip="{{tooltip}}" style="cursor: help; outline: none; stroke: #111; stroke-width: 1;"></path>
-                                            {{/if}}
-                                        {{/each}}
-                                    </svg>
-                                </div>
+                        <div style="display: flex; gap: 10px;">
+                            <div style="flex: 1; background: rgba(0,0,0,0.5); padding: 12px; border-radius: 3px; border: 1px dashed #333; display: flex; flex-direction: column;">
+                                <div style="color: #888; font-size: 0.75em; text-transform: uppercase; margin-bottom: 10px; text-align: center;">Enemy Elements</div>
                                 
-                                <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; flex: 1;">
-                                    {{#each pitBoss.legendItems}}
-                                    <div style="display: flex; align-items: center; gap: 5px; cursor: help; background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 4px; border: 1px solid #333;" data-tooltip="{{tooltip}}">
-                                        <div style="width: 10px; height: 10px; background: {{color}}; border-radius: 2px; border: 1px solid #000;"></div>
-                                        <span style="color: #eee; font-size: 0.8em; white-space: nowrap;">{{name}}</span>
+                                {{#if pitBoss.pieSlices.length}}
+                                <div style="display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 20px;">
+                                    <div style="width: 100px; height: 100px; flex-shrink: 0;">
+                                        <svg viewBox="0 0 100 100" style="width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible;">
+                                            {{#each pitBoss.pieSlices}}
+                                                {{#if isFull}}
+                                                    <circle cx="50" cy="50" r="50" fill="{{color}}" data-tooltip="{{tooltip}}" style="cursor: help; outline: none;"></circle>
+                                                {{else}}
+                                                    <path d="{{path}}" fill="{{color}}" data-tooltip="{{tooltip}}" style="cursor: help; outline: none; stroke: #111; stroke-width: 1;"></path>
+                                                {{/if}}
+                                            {{/each}}
+                                        </svg>
                                     </div>
-                                    {{/each}}
+                                    <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; flex: 1;">
+                                        {{#each pitBoss.legendItems}}
+                                        <div style="display: flex; align-items: center; gap: 5px; cursor: help; background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 4px; border: 1px solid #333;" data-tooltip="{{tooltip}}">
+                                            <div style="width: 10px; height: 10px; background: {{color}}; border-radius: 2px; border: 1px solid #000;"></div>
+                                            <span style="color: #eee; font-size: 0.8em; white-space: nowrap;">{{name}}</span>
+                                        </div>
+                                        {{/each}}
+                                    </div>
                                 </div>
+                                {{else}}
+                                <div style="font-size: 0.8em; color: #ffaa00; text-align: center; line-height: 1.4;">No Damage Logged</div>
+                                {{/if}}
                             </div>
-                            {{else}}
-                            <div style="font-size: 0.8em; color: #ffaa00; text-align: center; line-height: 1.4;">
-                                No Damage Logged
+
+                            <div style="flex: 1; background: rgba(0,0,0,0.5); padding: 12px; border-radius: 3px; border: 1px dashed #333; display: flex; flex-direction: column;">
+                                <div style="color: #888; font-size: 0.75em; text-transform: uppercase; margin-bottom: 10px; text-align: center;">Active Time Distribution</div>
+                                
+                                {{#if pitBoss.timePieSlices.length}}
+                                <div style="display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 20px;">
+                                    <div style="width: 100px; height: 100px; flex-shrink: 0;">
+                                        <svg viewBox="0 0 100 100" style="width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible;">
+                                            {{#each pitBoss.timePieSlices}}
+                                                {{#if isFull}}
+                                                    <circle cx="50" cy="50" r="50" fill="{{color}}" data-tooltip="{{tooltip}}" style="cursor: help; outline: none;"></circle>
+                                                {{else}}
+                                                    <path d="{{path}}" fill="{{color}}" data-tooltip="{{tooltip}}" style="cursor: help; outline: none; stroke: #111; stroke-width: 1;"></path>
+                                                {{/if}}
+                                            {{/each}}
+                                        </svg>
+                                    </div>
+                                    <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; flex: 1;">
+                                        {{#each pitBoss.timeLegendItems}}
+                                        <div style="display: flex; align-items: center; gap: 5px; cursor: help; background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 4px; border: 1px solid #333;" data-tooltip="{{tooltip}}">
+                                            <div style="width: 10px; height: 10px; background: {{color}}; border-radius: 2px; border: 1px solid #000;"></div>
+                                            <span style="color: #eee; font-size: 0.8em; white-space: nowrap;">{{name}} ({{formattedTime}})</span>
+                                        </div>
+                                        {{/each}}
+                                    </div>
+                                </div>
+                                {{else}}
+                                <div style="font-size: 0.8em; color: #ffaa00; text-align: center; line-height: 1.4;">No Turn Times Logged</div>
+                                {{/if}}
                             </div>
-                            {{/if}}
                         </div>
                     </div>
                 </div>
@@ -352,7 +382,7 @@
                         <i class="fas {{#if isParty}}fa-user{{else}}fa-skull{{/if}}" style="color: {{#if isParty}}#44aaff{{else}}#ff6666{{/if}}; margin-right: 8px;"></i>
                         {{name}} 
                         <span style="font-size: 0.75em; color: #888; font-weight: normal; margin-left: 10px;">
-                            ({{logs.length}} Actions | Avg: {{avgTurnTimeStr}} | Max: {{maxTurnTimeStr}})
+                            ({{logs.length}} Actions | Total: {{totalTurnTimeStr}} | Avg: {{avgTurnTimeStr}} | Max: {{maxTurnTimeStr}})
                         </span>
                     </summary>
                     <div style="padding: 10px; display: flex; flex-direction: column; gap: 6px; background: rgba(0,0,0,0.4);">
