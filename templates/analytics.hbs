@@ -8,7 +8,7 @@
 
     <div style="flex: 0 0 auto; border-bottom: 2px solid #ff4444; padding-bottom: 10px; margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px;">
-            <h2 style="margin: 0; color: #ffaa00; font-family: 'Signika', sans-serif;"><i class="fas fa-microscope"></i> Forensics</h2>
+            <h2 style="margin: 0; color: #ffaa00; font-family: 'Signika', sans-serif;"><i class="fas fa-microscope"></i> Combat Forensics</h2>
             
             <div style="display: flex; gap: 5px;">
                 <select id="analytics-selector" style="width: 300px; background: #111; color: #eee; border: 1px solid #ff4444; padding: 4px;">
@@ -49,7 +49,7 @@
             {{#if isGM}}
                 Expected Difficulty: <span style="color: {{stats.diffColor}}; font-weight: bold;" data-tooltip="Party Lvl {{stats.partyLevel}} | {{stats.partySize}} PCs | {{stats.totalXP}} XP Budget">{{stats.difficultyStr}}</span> | 
             {{/if}}
-            Active Individuals: <span style="color: #44aaff; font-weight: bold;">{{stats.partyCount}} Party</span> {{#if isGM}}vs <span style="color: #ff4444; font-weight: bold;">{{stats.enemyCount}} Enemy</span>{{/if}} | 
+            Active Combatants: <span style="color: #44aaff; font-weight: bold;">{{stats.partyCount}} Party</span> {{#if isGM}}vs <span style="color: #ff4444; font-weight: bold;">{{stats.enemyCount}} Enemy</span>{{/if}} | 
             Total Actions: <span style="color: #fff;">{{stats.partyActions}}{{#if isGM}} vs {{stats.enemyActions}}{{/if}}</span> |
             Active Time: <span style="color: #ffaa00; font-weight: bold;">{{stats.totalEncounterTimeStr}}</span>
         </div>
@@ -58,7 +58,7 @@
     <div style="display: flex; gap: 2px; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; flex: 0 0 auto;">
         <button data-action="setViewMode" data-mode="overview" style="flex: 1; background: {{#if (eq viewMode 'overview')}}#44aaff{{else}}#222{{/if}}; color: {{#if (eq viewMode 'overview')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;"><i class="fas fa-chart-pie"></i> Overview</button>
         <button data-action="setViewMode" data-mode="time" style="flex: 1; background: {{#if (eq viewMode 'time')}}#ffaa00{{else}}#222{{/if}}; color: {{#if (eq viewMode 'time')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;"><i class="fas fa-stream"></i> Timeline</button>
-        <button data-action="setViewMode" data-mode="actor" style="flex: 1; background: {{#if (eq viewMode 'actor')}}#ff4444{{else}}#222{{/if}}; color: {{#if (eq viewMode 'actor')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;"><i class="fas fa-users"></i> Individuals</button>
+        <button data-action="setViewMode" data-mode="actor" style="flex: 1; background: {{#if (eq viewMode 'actor')}}#ff4444{{else}}#222{{/if}}; color: {{#if (eq viewMode 'actor')}}#fff{{else}}#888{{/if}}; border: 1px solid #444;"><i class="fas fa-users"></i> Combatants</button>
     </div>
 
     <div style="flex: 1 1 auto; overflow-y: auto; padding-right: 5px;">
@@ -140,7 +140,6 @@
                         <div style="display: flex; gap: 10px;">
                             <div style="flex: 1; background: rgba(0,0,0,0.5); padding: 12px; border-radius: 3px; border: 1px dashed #333; display: flex; flex-direction: column;">
                                 <div style="color: #888; font-size: 0.75em; text-transform: uppercase; margin-bottom: 10px; text-align: center;">Enemy Elements</div>
-                                
                                 {{#if pitBoss.pieSlices.length}}
                                 <div style="display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 20px;">
                                     <div style="width: 100px; height: 100px; flex-shrink: 0;">
@@ -170,7 +169,6 @@
 
                             <div style="flex: 1; background: rgba(0,0,0,0.5); padding: 12px; border-radius: 3px; border: 1px dashed #333; display: flex; flex-direction: column;">
                                 <div style="color: #888; font-size: 0.75em; text-transform: uppercase; margin-bottom: 10px; text-align: center;">Active Time Distribution</div>
-                                
                                 {{#if pitBoss.timePieSlices.length}}
                                 <div style="display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 20px;">
                                     <div style="width: 100px; height: 100px; flex-shrink: 0;">
@@ -271,6 +269,31 @@
                         <div style="display: flex; gap: 2px; font-size: 0.75em; color: #888; padding-top: 4px; text-align: center; font-weight: bold;">
                             {{#each d20Graph}}<div style="flex: 1;">{{value}}</div>{{/each}}
                         </div>
+
+                        {{#if abilityBreakdown.length}}
+                        <div style="margin-top: 15px; padding-top: 10px; border-top: 1px dashed #555;">
+                            <div style="color: #ffaa00; font-size: 0.8em; text-transform: uppercase; margin-bottom: 8px; text-align: center; letter-spacing: 1px;">Ability Output Profile</div>
+                            <div style="display: grid; grid-template-columns: 1fr; gap: 6px;">
+                                {{#each abilityBreakdown}}
+                                <div style="display: flex; flex-direction: column; font-size: 0.85em; background: rgba(0,0,0,0.5); border: 1px solid #333; padding: 6px 8px; border-radius: 3px;">
+                                    <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #444; padding-bottom: 4px; margin-bottom: 4px;">
+                                        <span style="color: #eee; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%;" data-tooltip="{{name}}">{{name}}</span>
+                                        <span style="font-weight: bold;">
+                                            {{#if damage}}<span style="color: #ff6666;">{{damage}} DMG</span> <span style="color:#888; font-size:0.85em; font-weight:normal;">({{dmgPct}}%)</span>{{/if}}
+                                            {{#if (and damage healing)}} <span style="color: #555;">|</span> {{/if}}
+                                            {{#if healing}}<span style="color: #44ff44;">{{healing}} HEAL</span>{{/if}}
+                                        </span>
+                                    </div>
+                                    <div style="display: flex; justify-content: space-between; color: #888; font-size: 0.85em;">
+                                        <span>Uses: <span style="color: #ccc;">{{casts}}</span></span>
+                                        <span>Damage Instances: <span style="color: #ccc;">{{damageInstances}}</span></span>
+                                    </div>
+                                </div>
+                                {{/each}}
+                            </div>
+                        </div>
+                        {{/if}}
+
                     </div>
                 </details>
                 {{/each}}
@@ -324,6 +347,31 @@
                         <div style="display: flex; gap: 2px; font-size: 0.75em; color: #888; padding-top: 4px; text-align: center; font-weight: bold;">
                             {{#each d20Graph}}<div style="flex: 1;">{{value}}</div>{{/each}}
                         </div>
+
+                        {{#if abilityBreakdown.length}}
+                        <div style="margin-top: 15px; padding-top: 10px; border-top: 1px dashed #555;">
+                            <div style="color: #ffaa00; font-size: 0.8em; text-transform: uppercase; margin-bottom: 8px; text-align: center; letter-spacing: 1px;">Ability Output Profile</div>
+                            <div style="display: grid; grid-template-columns: 1fr; gap: 6px;">
+                                {{#each abilityBreakdown}}
+                                <div style="display: flex; flex-direction: column; font-size: 0.85em; background: rgba(0,0,0,0.5); border: 1px solid #333; padding: 6px 8px; border-radius: 3px;">
+                                    <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #444; padding-bottom: 4px; margin-bottom: 4px;">
+                                        <span style="color: #eee; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%;" data-tooltip="{{name}}">{{name}}</span>
+                                        <span style="font-weight: bold;">
+                                            {{#if damage}}<span style="color: #ff6666;">{{damage}} DMG</span> <span style="color:#888; font-size:0.85em; font-weight:normal;">({{dmgPct}}%)</span>{{/if}}
+                                            {{#if (and damage healing)}} <span style="color: #555;">|</span> {{/if}}
+                                            {{#if healing}}<span style="color: #44ff44;">{{healing}} HEAL</span>{{/if}}
+                                        </span>
+                                    </div>
+                                    <div style="display: flex; justify-content: space-between; color: #888; font-size: 0.85em;">
+                                        <span>Uses: <span style="color: #ccc;">{{casts}}</span></span>
+                                        <span>Damage Instances: <span style="color: #ccc;">{{damageInstances}}</span></span>
+                                    </div>
+                                </div>
+                                {{/each}}
+                            </div>
+                        </div>
+                        {{/if}}
+
                     </div>
                 </details>
                 {{/each}}
@@ -358,7 +406,13 @@
                                         {{/if}}
                                     </div>
                                     <div style="flex: 1; padding: 8px 12px; display: flex; flex-direction: column; justify-content: center; min-width: 0;">
-                                        <div style="font-size: 0.85em; color: #eee; margin-bottom: 4px; line-height: 1.3;"><b>{{mainTitle}}</b>{{#if minion}} <span style="color:#ffaa00;">[{{minion}}]</span>{{/if}} <span style="color:#666; font-size:0.8em; margin-left:5px;"><i class="fas fa-expand-arrows-alt"></i> details</span></div>
+                                        <div style="font-size: 0.85em; color: #eee; margin-bottom: 4px; line-height: 1.3;">
+                                            <b>{{mainTitle}}</b>{{#if minion}} <span style="color:#ffaa00;">[{{minion}}]</span>{{/if}} 
+                                            <span style="color:#666; font-size:0.8em; margin-left:5px;"><i class="fas fa-expand-arrows-alt"></i> details</span>
+                                            {{#if ../../isGM}}
+                                            <a data-action="reassignLog" data-log-id="{{id}}" style="color: #44aaff; cursor: pointer; margin-left: 8px;" data-tooltip="Audit Attribution" onclick="event.preventDefault();"><i class="fas fa-edit"></i></a>
+                                            {{/if}}
+                                        </div>
                                     </div>
                                     <div style="flex: 0 0 110px; padding: 8px; background: rgba(0,0,0,0.7); border-left: 1px dashed #444; display: flex; align-items: center; justify-content: center; text-align: center; font-weight: bold; font-size: 0.85em; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else if (eq type 'Skill')}}#aa44ff{{else}}#ffcc00{{/if}};">{{{result}}}</div>
                                 </summary>
@@ -398,6 +452,9 @@
                                             <b>{{mainTitle}}</b>{{#if minion}} <span style="color:#ffaa00;">[{{minion}}]</span>{{/if}}
                                             {{#if (and target (not (eq target 'None')) (not (eq target 'Unknown / AoE')))}}
                                             <span style="color: #aaa; margin-left: 5px;" data-tooltip="Targeting: {{target}}"> <i class="fas fa-arrow-right" style="color: #555; font-size: 0.8em;"></i> {{target}}</span>
+                                            {{/if}}
+                                            {{#if ../../isGM}}
+                                            <a data-action="reassignLog" data-log-id="{{id}}" style="color: #44aaff; cursor: pointer; margin-left: 8px;" data-tooltip="Audit Attribution" onclick="event.preventDefault();"><i class="fas fa-edit"></i></a>
                                             {{/if}}
                                         </div>
                                     </div>
