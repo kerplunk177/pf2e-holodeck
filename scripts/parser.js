@@ -532,8 +532,40 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     ui.notifications.warn("Combat Forensics | All databases purged.");
                 }
             },
+            swapAllegiance: async function(event, target) {
+                const requiredRole = game.settings.get('pf2e-holodeck', 'auditPermission') || 4;
+                if (game.user.role < requiredRole) return;
+                
+                const actorName = target.dataset.actor;
+                let targetLedger = this.selectedEncounter === "current" ? window.CombatParser.ledger :
+                                   this.selectedEncounter === "exploration" ? window.CombatParser.explorationLedger : null;
+                let dbName = null;
+                let encName = this.selectedEncounter;
+
+                if (!targetLedger) {
+                    const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
+                    const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
+                    const sDb = game.settings.get('pf2e-holodeck', 'holodeckHistory') || {};
+                    if (hDb[encName]) { targetLedger = hDb[encName]; dbName = 'combatHistory'; }
+                    else if (eDb[encName]) { targetLedger = eDb[encName]; dbName = 'explorationHistory'; }
+                    else if (sDb[encName]) { targetLedger = sDb[encName]; dbName = 'holodeckHistory'; }
+                }
+
+                if (targetLedger && targetLedger.actors[actorName]) {
+                    targetLedger.actors[actorName].isAlly = !targetLedger.actors[actorName].isAlly;
+                    if (dbName) {
+                        let db = game.settings.get('pf2e-holodeck', dbName);
+                        db[encName] = targetLedger;
+                        await game.settings.set('pf2e-holodeck', dbName, db);
+                    }
+                    this.expandedActors[actorName] = true;
+                    this.render({parts: ["main"]});
+                    ui.notifications.info(`Combat Forensics | ${actorName} allegiance swapped.`);
+                }
+            },
             reassignLog: async function(event, target) {
-                if (!game.user.isGM) return;
+                const requiredRole = game.settings.get('pf2e-holodeck', 'auditPermission') || 4;
+                if (game.user.role < requiredRole) return;
                 
                 const logId = target.dataset.logId;
                 
@@ -569,7 +601,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 
                 let actorOptions = Object.keys(targetLedger.actors).map(name => `<option value="${name}" ${name === logEntry.source ? 'selected' : ''}>${name}</option>`).join("");
 
-                let otherLogsBySource = targetLedger.masterLog.filter(l => !l.isDivider && !l.isTurnSummary && l.source === logEntry.source && l.id !== logId);
+                let otherLogsBySource = targetLedger.masterLog.filter(l => !l.isDivider && !l.isTurnSummary && l.source === logEntry.source && l.id !== logId && l.name === logEntry.name);
                 let checklistHtml = "";
                 
                 if (otherLogsBySource.length > 0) {
@@ -814,8 +846,142 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 if (Object.keys(eDb).length > 0) pages.push({ name: "Exploration Logs", type: "text", text: { format: 1, content: buildHtml(eDb, "Out-of-Combat Exploration Logs") }});
                 if (Object.keys(sDb).length > 0) pages.push({ name: "Classified Simulations", type: "text", text: { format: 1, content: buildHtml(sDb, "Holodeck Test Logs") }});
 
-                const journal = await JournalEntry.create({ name: `Data Archives (${new Date().toLocaleDateString()})`, pages: pages });
+                const journal = await JournalEntry.create({ 
+                    name: `Data Archives (${new Date().toLocaleDateString()})`, 
+                    pages: pages,
+                    flags: {
+                        "pf2e-holodeck": {
+                            archiveData: { combatHistory: hDb, explorationHistory: eDb, holodeckHistory: sDb }
+                        }
+                    }
+                });
+                
                 if (journal) { journal.sheet.render(true); ui.notifications.info("Combat Forensics | Data archived to Journal successfully."); }
+            },
+            downloadJSON: async function() {
+                if (!game.user.isGM) return ui.notifications.warn("Only the GM can download raw JSON databases.");
+                const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
+                const sDb = game.settings.get('pf2e-holodeck', 'holodeckHistory') || {};
+                const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
+                
+                if (Object.keys(hDb).length === 0 && Object.keys(sDb).length === 0 && Object.keys(eDb).length === 0) return ui.notifications.warn("No data to export.");
+
+                const exportPayload = {
+                    exportDate: new Date().toISOString(),
+                    module: "pf2e-holodeck",
+                    databases: {
+                        combatHistory: hDb,
+                        holodeckHistory: sDb,
+                        explorationHistory: eDb
+                    }
+                };
+
+                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportPayload, null, 2));
+                const downloadAnchorNode = document.createElement('a');
+                downloadAnchorNode.setAttribute("href", dataStr);
+                downloadAnchorNode.setAttribute("download", `combat-forensics-backup-${new Date().toISOString().split('T')[0]}.json`);
+                document.body.appendChild(downloadAnchorNode); 
+                downloadAnchorNode.click();
+                downloadAnchorNode.remove();
+                ui.notifications.info("Combat Forensics | JSON download initiated.");
+            },
+            importData: async function() {
+                if (!game.user.isGM) return ui.notifications.warn("Only the GM can import archives.");
+
+                const journals = game.journal.contents.filter(j => j.flags?.["pf2e-holodeck"]?.archiveData);
+                let journalOptions = journals.map(j => `<option value="${j.id}">${j.name}</option>`).join("");
+                
+                let journalHtml = journals.length > 0 
+                    ? `<div class="form-group" style="margin-bottom: 10px;">
+                           <label style="font-weight: bold; color: #44aaff; display:block; margin-bottom:4px;">From Journal Archive:</label>
+                           <div style="display:flex; gap: 5px;">
+                               <select id="import-journal-select" style="flex:1; padding: 6px; background: #222; color: #eee; border: 1px solid #555; border-radius: 3px;">
+                                   ${journalOptions}
+                               </select>
+                               <button id="btn-import-journal" style="flex: 0 0 auto; background: #113355; border: 1px solid #44aaff; color: #fff;">Load Journal</button>
+                           </div>
+                       </div>` 
+                    : `<div style="color: #888; font-style: italic; margin-bottom: 10px;">No Journal Archives found. Export first.</div>`;
+
+                const content = `
+                    <div style="background: #0f0f15; color: #eee; padding: 15px; border: 1px solid #444; border-radius: 4px; font-family: 'Signika', sans-serif;">
+                        <p style="margin-top: 0; color: #ccc; font-size: 0.9em;">Importing will safely append archived encounters into your current databases.</p>
+                        ${journalHtml}
+                        <hr style="border: 0; border-top: 1px dashed #444; margin: 15px 0;">
+                        <div class="form-group">
+                            <label style="font-weight: bold; color: #aa44ff; display:block; margin-bottom:4px;">From Local JSON File:</label>
+                            <button id="btn-import-json" style="width: 100%; background: #331133; border: 1px solid #aa44ff; color: #fff; padding: 8px;">
+                                <i class="fas fa-upload"></i> Select & Upload JSON Backup
+                            </button>
+                            <input type="file" id="json-upload-input" accept=".json" style="display: none;">
+                        </div>
+                    </div>
+                `;
+
+                const processImport = async (data) => {
+                    if (!data || (!data.combatHistory && !data.combat && !data.explorationHistory && !data.holodeckHistory)) {
+                        return ui.notifications.error("Combat Forensics | Invalid archive data format.");
+                    }
+
+                    const safeMergeDb = async (settingName, newData) => {
+                        if (!newData || Object.keys(newData).length === 0) return;
+                        let current = game.settings.get('pf2e-holodeck', settingName) || {};
+                        let updated = { ...current };
+                        // Direct bypass of Foundry's destructive mergeObject logic
+                        for (const [key, value] of Object.entries(newData)) {
+                            updated[key] = value;
+                        }
+                        await game.settings.set('pf2e-holodeck', settingName, updated);
+                    };
+
+                    await safeMergeDb('combatHistory', data.combatHistory || data.combat);
+                    await safeMergeDb('explorationHistory', data.explorationHistory || data.exploration);
+                    await safeMergeDb('holodeckHistory', data.holodeckHistory || data.sim);
+
+                    ui.notifications.info("Combat Forensics | Data successfully imported and merged.");
+                    this.render({parts: ["main"]});
+                };
+
+                let d = new Dialog({
+                    title: "Import Combat Archives",
+                    content: content,
+                    render: (html) => {
+                        html.find('#btn-import-journal').click(async (e) => {
+                            e.preventDefault();
+                            const jId = html.find('#import-journal-select').val();
+                            const journal = game.journal.get(jId);
+                            if (journal) {
+                                const archiveData = journal.flags["pf2e-holodeck"].archiveData;
+                                await processImport(archiveData);
+                                d.close();
+                            }
+                        });
+
+                        html.find('#btn-import-json').click((e) => {
+                            e.preventDefault();
+                            html.find('#json-upload-input').click();
+                        });
+
+                        html.find('#json-upload-input').change((e) => {
+                            const file = e.target.files[0];
+                            if (!file) return;
+                            const reader = new FileReader();
+                            reader.onload = async (ev) => {
+                                try {
+                                    const json = JSON.parse(ev.target.result);
+                                    const data = json.databases || json; 
+                                    await processImport(data);
+                                    d.close();
+                                } catch (err) {
+                                    ui.notifications.error("Combat Forensics | Failed to parse JSON file.");
+                                    console.error(err);
+                                }
+                            };
+                            reader.readAsText(file);
+                        });
+                    },
+                    buttons: { close: { icon: '<i class="fas fa-times"></i>', label: "Close" } }
+                }, { width: 450 }).render(true);
             }
         }
     };
@@ -863,6 +1029,9 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
         const isExploration = this.selectedEncounter === "exploration" || this.selectedEncounter.startsWith("meta-explore") || this.selectedEncounter.startsWith("[EXPLORE]");
         const isGM = game.user.isGM;
 
+        const canAudit = game.user.role >= (game.settings.get('pf2e-holodeck', 'auditPermission') || 4);
+        const showAdvanced = !(game.settings.get('pf2e-holodeck', 'simplifiedMetrics') || false);
+
         const historyDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
         const exploreDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
         const simDb = isGM ? (game.settings.get('pf2e-holodeck', 'holodeckHistory') || {}) : {};
@@ -883,10 +1052,12 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             Object.entries(targetDb).forEach(([encounterName, encounter]) => {
                 let encMaxRounds = encounter.maxRounds || 1;
                 
-                if (encounter.masterLog && encounter.masterLog.length > 0) {
+                let safeMasterLog = Array.isArray(encounter.masterLog) ? encounter.masterLog : Object.values(encounter.masterLog || {});
+
+                if (safeMasterLog && safeMasterLog.length > 0) {
                     activeLedger.masterLog.push({ isDivider: true, encounterName: encounterName, round: cumulativeRounds + 1 });
                     
-                    encounter.masterLog.forEach(log => {
+                    safeMasterLog.forEach(log => {
                         let adjustedLog = foundry.utils.deepClone(log);
                         adjustedLog.round += cumulativeRounds; 
                         activeLedger.masterLog.push(adjustedLog);
@@ -910,9 +1081,11 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     m.expectedDamage = (m.expectedDamage || 0) + (a.expectedDamage || 0);
                     m.actualDamageRoll = (m.actualDamageRoll || 0) + (a.actualDamageRoll || 0);
                     
-                    if (a.turnTimes) m.turnTimes.push(...a.turnTimes);
+                    let safeTurnTimes = Array.isArray(a.turnTimes) ? a.turnTimes : Object.values(a.turnTimes || {});
+                    if (safeTurnTimes.length) m.turnTimes.push(...safeTurnTimes);
 
-                    if (a.d20Rolls) { for (let i = 0; i < 20; i++) { m.d20Rolls[i] += a.d20Rolls[i]; } }
+                    let safeD20s = Array.isArray(a.d20Rolls) ? a.d20Rolls : Object.values(a.d20Rolls || {});
+                    if (safeD20s.length) { for (let i = 0; i < 20; i++) { m.d20Rolls[i] += (safeD20s[i] || 0); } }
                     
                     if (a.damageTypes) {
                         for (let [dt, dData] of Object.entries(a.damageTypes)) {
@@ -927,8 +1100,9 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                         }
                     }
                     
-                    if (a.history) {
-                        let adjustedHistory = a.history.map(h => ({...h, round: h.round + cumulativeRounds}));
+                    let safeHistory = Array.isArray(a.history) ? a.history : Object.values(a.history || {});
+                    if (safeHistory.length) {
+                        let adjustedHistory = safeHistory.map(h => ({...h, round: h.round + cumulativeRounds}));
                         m.history.push(...adjustedHistory);
                     }
                     if (a.type === "character" || a.type === "familiar") m.type = a.type;
@@ -948,7 +1122,15 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             activeLedger = historyDb[this.selectedEncounter] || exploreDb[this.selectedEncounter] || simDb[this.selectedEncounter] || activeLedger;
         }
 
-        // --- THE GREAT GHOST MIGRATION ---
+        if (activeLedger.masterLog && !Array.isArray(activeLedger.masterLog)) {
+            activeLedger.masterLog = Object.values(activeLedger.masterLog);
+        }
+        Object.values(activeLedger.actors).forEach(a => {
+            if (a.history && !Array.isArray(a.history)) a.history = Object.values(a.history);
+            if (a.turnTimes && !Array.isArray(a.turnTimes)) a.turnTimes = Object.values(a.turnTimes);
+            if (a.d20Rolls && !Array.isArray(a.d20Rolls)) a.d20Rolls = Object.values(a.d20Rolls);
+        });
+
         let needsMigrationSave = false;
         activeLedger.masterLog.forEach(log => {
             if (!log.isDivider && !log.isTurnSummary && !log.id) {
@@ -984,9 +1166,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
         
         let logCounter = 0;
         let partyActions = 0, enemyActions = 0;
-        
-        let pcsObj = Object.values(activeLedger.actors).filter(a => a.isAlly || a.type === "character" || a.type === "familiar");
-        let npcsObj = Object.values(activeLedger.actors).filter(a => !(a.isAlly || a.type === "character" || a.type === "familiar"));
 
         const formatTime = (secs) => {
             const m = Math.floor(secs / 60);
@@ -998,14 +1177,10 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             if (log.isDivider) return log; 
             
             let actorData = activeLedger.actors[log.source];
-            let isParty = actorData ? (actorData.isAlly || actorData.type === "character" || actorData.type === "familiar") : false;
+            let isParty = actorData ? actorData.isAlly : false;
 
             if (log.isTurnSummary) {
-                return { 
-                    ...log, 
-                    isParty: isParty,
-                    formattedTime: formatTime(log.duration)
-                };
+                return { ...log, isParty: isParty, formattedTime: formatTime(log.duration) };
             }
 
             let parts = log.name ? log.name.split(/(?: - | \| )/) : [""];
@@ -1029,7 +1204,26 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             if (isParty) partyActions++;
             else enemyActions++;
 
-            return { ...log, mainTitle, tags, isParty };
+            let isSuspect = false;
+            let suspectReason = "";
+            let targetData = activeLedger.actors[log.target];
+            let hasValidTarget = log.target && log.target !== "None" && log.target !== "Unknown / AoE";
+            if (log.source !== "Environment" && targetData && log.target !== "None" && log.target !== "Unknown / AoE") {
+                let isTargetParty = targetData.isAlly;
+                if (log.type === "Damage") {
+                    if (isParty === isTargetParty) {
+                        isSuspect = true;
+                        suspectReason = log.source === log.target ? "Self-Harm: Attacker damaged themselves." : "Friendly Fire: Damaged an allied combatant.";
+                    }
+                } else if (log.type === "Heal") {
+                    if (isParty !== isTargetParty) {
+                        isSuspect = true;
+                        suspectReason = "Traitor Healing: Restored HP to an enemy combatant.";
+                    }
+                }
+            }
+
+            return { ...log, mainTitle, tags, isParty, isSuspect, suspectReason, hasValidTarget };
         });
 
         processedLogs.forEach(l => {
@@ -1104,7 +1298,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             const successRate = accuracy; 
             const totalChecks = Math.max(totalAttacks, totalD20sRolled);
 
-            let isAlly = a.isAlly || a.type === "character" || a.type === "familiar";
+            let isAlly = a.isAlly;
 
             let tSum = 0;
             let tCount = 0;
@@ -1170,9 +1364,10 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             let abilityBreakdown = Object.values(abilityTotals)
                 .filter(ab => ab.damage > 0 || ab.healing > 0 || ab.casts > 0)
                 .map(ab => {
-                    return {
-                        ...ab,
-                        dmgPct: a.damageDealt > 0 ? Math.round((ab.damage / a.damageDealt) * 100) : 0
+                    return { 
+                        ...ab, 
+                        dmgPct: a.damageDealt > 0 ? Math.round((ab.damage / a.damageDealt) * 100) : 0,
+                        hasBoth: ab.damage > 0 && ab.healing > 0 // ADD THIS LINE
                     };
                 })
                 .sort((x, y) => (y.damage + y.healing) - (x.damage + x.healing));
@@ -1228,11 +1423,12 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             const combatantData = { 
                 ...a, damagePercent, dpr, healingDealt: a.healingDealt || 0, accuracy, d20Graph, 
                 maxDamageDealt, maxDamageTaken, maxHealDealt, avgD20Display, totalChecks, successRate, totalTurnTimeStr, avgTurnTimeStr, maxTurnTimeStr, isAlly,
-                abilityBreakdown
+                abilityBreakdown,
+                logs: processedLogs.filter(l => !l.isDivider && !l.isTurnSummary && l.source === a.name)
             };
             
             if (isAlly) pcs.push(combatantData);
-            else if (isGM) npcs.push(combatantData); 
+            else if (isGM || showAdvanced) npcs.push(combatantData); 
         });
         
         pcs.sort((a, b) => b.damageDealt - a.damageDealt);
@@ -1244,6 +1440,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             actorGroups.push({ 
                 name: a.name, 
                 isParty: a.isAlly, 
+                canViewActor: a.isAlly || isGM, // ADD THIS LINE
                 logs: aLogs,
                 totalTurnTimeStr: a.totalTurnTimeStr,
                 avgTurnTimeStr: a.avgTurnTimeStr,
@@ -1339,7 +1536,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
         let difficultyStr = "Trivial";
         let diffColor = "#44ff44"; 
         let totalXP = 0, partyLevel = 1, partySize = 4;
-        let truePcs = pcsObj.filter(p => p.type === "character"); 
+        let truePcs = pcs.filter(p => p.type === "character"); 
         
         if (isMeta) {
             difficultyStr = "Meta Aggregate";
@@ -1351,7 +1548,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             partySize = truePcs.length;
             partyLevel = Math.max(...truePcs.map(p => parseInt(p.level) || 1));
             
-            npcsObj.forEach(npc => {
+            npcs.forEach(npc => {
                 let levelDiff = (parseInt(npc.level) || 0) - partyLevel;
                 if (levelDiff < -4) totalXP += 0; 
                 else if (levelDiff === -4) totalXP += 10;
@@ -1392,12 +1589,12 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 
         return { 
             hasData: Object.keys(activeLedger.actors).length > 0,
-            isGM, isExploration, isMeta, viewMode: this.viewMode,
+            isGM, canAudit, showAdvanced, isExploration, isMeta, viewMode: this.viewMode,
             pcs, npcs, rounds, actorGroups,
             historyKeys, exploreKeys, simKeys, selectedEncounter: this.selectedEncounter,
             expandedLogs: this.expandedLogs || {}, expandedActors: this.expandedActors || {},
             stats: {
-                partyCount: pcsObj.length, enemyCount: npcsObj.length,
+                partyCount: pcs.length, enemyCount: npcs.length,
                 partyActions, enemyActions, difficultyStr, diffColor, partyLevel, partySize, totalXP,
                 totalEncounterTimeStr: formatTime(totalCombatTimeSeconds)
             },
@@ -1423,6 +1620,25 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 window.CombatForensicsApp = CombatForensicsApp;
 
 Hooks.once('init', () => {
+    game.settings.register('pf2e-holodeck', 'simplifiedMetrics', {
+        name: "Simplified Metrics",
+        hint: "Hides advanced analytics (Pit Boss charts, ability profiles) to focus only on raw damage and rolls. Ideal for keeping the UI clean for players.",
+        scope: 'world',
+        config: true,
+        type: Boolean,
+        default: false
+    });
+    
+    game.settings.register('pf2e-holodeck', 'auditPermission', {
+        name: "Attribution Audit Role",
+        hint: "The minimum Foundry user role allowed to reassign timeline damage and swap actor allegiances.",
+        scope: 'world',
+        config: true,
+        type: Number,
+        choices: { 1: "Player", 2: "Trusted Player", 3: "Assistant GM", 4: "Game Master" },
+        default: 4
+    });
+
     game.keybindings.register('pf2e-holodeck', 'toggle-analytics', {
         name: "Toggle Combat Forensics",
         hint: "Instantly opens or closes the Combat Forensics dashboard.",
@@ -1451,7 +1667,6 @@ Hooks.on('createChatMessage', (message) => {
 
     const isSecret = (message.whisper && message.whisper.length > 0) || message.blind;
     const isHolodeck = canvas.scene?.getFlag('pf2e-holodeck', 'active');
-    
     if (isSecret && !isHolodeck) return;
 
     const systemFlags = message.flags?.pf2e || message.flags?.sf2e || {};
