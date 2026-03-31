@@ -81,6 +81,7 @@ window.CombatParser = {
                     name: actorName, type: actorType, level: actorLevel, isAlly: allyStatus,
                     damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
                     nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, 
+                    assists: 0, spellsCast: 0, focusSpent: 0, contributors: [],
                     expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
                 };
             } else {
@@ -123,7 +124,11 @@ window.CombatParser = {
             const activeLedger = isCombatPhase ? this.ledger : this.explorationLedger;
 
             const hasAppliedDamage = !!systemFlags.appliedDamage;
-            const isNarrativeDamage = /(?:unscathed|absorbing|takes .* damage|healed|restored|reduced by|mitigated)/i.test(fullText);
+            
+            // FIX: Ignore spell descriptions broadcast to chat so we don't hallucinate damage
+            const isItemCardBroadcast = context.type === "spell-cast" || (message.item && !message.isDamageRoll && !context.type);
+            const isNarrativeDamage = !isItemCardBroadcast && /(?:unscathed|absorbing|takes .* damage|healed|restored|reduced by|mitigated)/i.test(fullText);
+            
             const isApplication = !message.isDamageRoll && context.type !== "damage-roll" && (context.type === "damage-taken" || hasAppliedDamage || isNarrativeDamage);
             const isDamageRoll = message.isDamageRoll || context.type === "damage-roll";
             
@@ -198,27 +203,40 @@ window.CombatParser = {
             };
 
             // === START INJECTION 1: SPELL RESOURCE TRACKING (FIXED) ===
+            // === START INJECTION 1: SPELL RESOURCE TRACKING (FIXED) ===
             const originType = systemFlags.origin?.type || message.item?.type;
             const castLevel = systemFlags.castLevel || message.item?.system?.level?.value;
+            const traits = message.item?.system?.traits?.value || [];
+            
+            const isCantrip = traits.includes("cantrip");
+            const isFocus = message.item?.system?.category === "focus" || systemFlags.origin?.category === "focus" || traits.includes("focus");
             
             if (originType === 'spell' && castLevel && resolvedOwner) {
                 if (!activeLedger.actors[resolvedOwner]) {
-                    // Proper, FULL initialization to prevent NaN poisoning
                     activeLedger.actors[resolvedOwner] = {
                         name: resolvedOwner, type: msgActor ? msgActor.type : "npc", level: getActorLevel(msgActor), isAlly: checkIsAlly(msgActor),
                         damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
-                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
+                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [],
+                        assists: 0, spellsCast: {}, focusSpent: 0, contributors: []
                     };
                 }
                 let stats = activeLedger.actors[resolvedOwner];
-                if (!stats.spellsCast) stats.spellsCast = {};
-                if (!stats.spellsCast[castLevel]) stats.spellsCast[castLevel] = [];
                 
-                if (!stats.spellsCast[castLevel].includes(actionName)) {
-                    stats.spellsCast[castLevel].push(actionName);
+                // FIX: Only track actual spell slots, ignore free cantrips
+                if (!isCantrip) {
+                    if (!stats.spellsCast) stats.spellsCast = {};
+                    if (!stats.spellsCast[castLevel]) stats.spellsCast[castLevel] = [];
+                    if (!stats.spellsCast[castLevel].includes(actionName)) {
+                        stats.spellsCast[castLevel].push(actionName);
+                    }
+                }
+                
+                if (isFocus) {
+                    stats.focusSpent = (stats.focusSpent || 0) + 1;
                 }
             }
             // === END INJECTION 1 ===
+    
 
             if (isApplication) {
                 const applied = systemFlags.appliedDamage;
@@ -413,6 +431,31 @@ if (attackerName === "Unknown Source") {
                     if (isKill) stats.kills++;
                     activeLedger.totalDamage += effectiveValue;
                     
+                    // --- FIXED INJECTION: ASSIST TRACKING ---
+                    if (targetName !== "None" && activeLedger.actors[targetName]) {
+                        let targetStats = activeLedger.actors[targetName];
+                        
+                        // FIX: Ensure contributors is a standard Array (Sets break Foundry databases)
+                        if (!targetStats.contributors || !Array.isArray(targetStats.contributors)) {
+                            targetStats.contributors = [];
+                        }
+                        
+                        // Register this attacker as a contributor
+                        if (!targetStats.contributors.includes(attackerName)) {
+                            targetStats.contributors.push(attackerName);
+                        }
+
+                        // Award assists if it's a kill
+                        if (isKill) {
+                            targetStats.contributors.forEach(contributor => {
+                                if (contributor !== attackerName && activeLedger.actors[contributor]) {
+                                    activeLedger.actors[contributor].assists = (activeLedger.actors[contributor].assists || 0) + 1;
+                                }
+                            });
+                        }
+                    }
+                    // --- END ASSIST TRACKING ---
+                    
                     let resultText = effectiveValue === 0 ? `FULLY MITIGATED` : `${effectiveValue} DMG APPLIED`;
                     if (overValue > 0) resultText += ` <span style="color:#aaa; font-size:0.8em;">(${overValue} Overkill)</span>`;
                     if (isKill) resultText += " 💀";
@@ -530,20 +573,10 @@ if (attackerName === "Unknown Source") {
                 const itemUuid = systemFlags?.item?.uuid || context.item;
                 if (!actor || (!context.type && !itemUuid)) return;
 
-                const actorName = resolvedOwner;
-                const actorLevel = getActorLevel(actor);
-
-                if (!activeLedger.actors[actorName]) {
-                    activeLedger.actors[actorName] = {
-                        name: actorName, type: actor.type, level: actorLevel, isAlly: checkIsAlly(actor),
-                        damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
-                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
-                    };
-                }
-
-                let stats = activeLedger.actors[actorName];
-                let currentRound = game.combat ? game.combat.round : 1;
-                if (currentRound > activeLedger.maxRounds) activeLedger.maxRounds = currentRound;
+                let actorName = resolvedOwner;
+                let actorLevel = getActorLevel(actor);
+                let actorType = actor.type;
+                let isAllyStatus = checkIsAlly(actor);
 
                 let targetName = "None";
                 if (context.target?.token && canvas.scene) {
@@ -553,13 +586,51 @@ if (attackerName === "Unknown Source") {
                     targetName = Array.from(game.user.targets)[0].name;
                 }
 
+                // === FIX: ATTRIBUTE SAVES TO THE CASTER ===
+                if (isSave && systemFlags.origin?.actor) {
+                    const originDoc = fromUuidSync(systemFlags.origin.actor);
+                    if (originDoc) {
+                        const actualActor = originDoc.actor || originDoc;
+                        targetName = actorName; // The person who rolled the save is now the Target
+                        let rawName = window.CombatParser.getCanonicalName(actualActor, actualActor.name);
+                        actorName = window.CombatParser.resolveOwner(rawName, actualActor, actualActor.name); // Caster is now the Source
+                        actorLevel = getActorLevel(actualActor);
+                        actorType = actualActor.type;
+                        isAllyStatus = checkIsAlly(actualActor);
+                    }
+                }
+                // ==========================================
+
+                if (!activeLedger.actors[actorName]) {
+                    activeLedger.actors[actorName] = {
+                        name: actorName, type: actorType, level: actorLevel, isAlly: isAllyStatus,
+                        damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
+                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [],
+                        assists: 0, spellsCast: {}, focusSpent: 0, contributors: []
+                    };
+                }
+
+                let stats = activeLedger.actors[actorName];
+                let currentRound = game.combat ? game.combat.round : 1;
+                if (currentRound > activeLedger.maxRounds) activeLedger.maxRounds = currentRound;
+
                 const outcome = context.outcome; 
                 const isCrit = outcome === 'criticalSuccess' || outcome === 'critical-success';
                 
-                if (outcome === 'success') stats.hits++;
-                if (isCrit) stats.crits++;
-                if (outcome === 'failure') stats.misses++;
-                if (outcome === 'criticalFailure' || outcome === 'critical-failure') stats.critMisses++;
+                // === FIX: INVERT STATS FOR SAVES ===
+                if (isSave) {
+                    // If target succeeds on save, the caster missed.
+                    if (outcome === 'success') stats.misses++;
+                    if (isCrit) stats.critMisses++;
+                    if (outcome === 'failure') stats.hits++;
+                    if (outcome === 'criticalFailure' || outcome === 'critical-failure') stats.crits++;
+                } else {
+                    if (outcome === 'success') stats.hits++;
+                    if (isCrit) stats.crits++;
+                    if (outcome === 'failure') stats.misses++;
+                    if (outcome === 'criticalFailure' || outcome === 'critical-failure') stats.critMisses++;
+                }
+                // ===================================
 
                 const isHeroPoint = context.isReroll || (context.options && context.options.includes("hero-point")) || /(?:hero point|reroll)/i.test(fullText);
                 if (isHeroPoint) {
@@ -1617,13 +1688,20 @@ const collapseLogs = (rawLogs) => {
                 }
             }
 
+            // --- NEW: Tally total spells for the UI ---
+            let totalSpells = 0;
+            if (a.spellsCast) {
+                Object.values(a.spellsCast).forEach(spellList => totalSpells += spellList.length);
+            }
+
             const combatantData = { 
                 ...a, damagePercent, dpr, healingDealt: a.healingDealt || 0, accuracy, d20Graph, 
                 maxDamageDealt, maxDamageTaken, maxHealDealt, avgD20Display, totalChecks, successRate, totalTurnTimeStr, avgTurnTimeStr, maxTurnTimeStr, isAlly,
                 abilityBreakdown,
                 effectiveDamage: a.effectiveDamage || 0,
                 overkill: a.overkill || 0,
-                logs: collapseLogs(processedLogs.filter(l => !l.isDivider && !l.isTurnSummary && l.source === a.name))
+                logs: collapseLogs(processedLogs.filter(l => !l.isDivider && !l.isTurnSummary && l.source === a.name)),
+                totalSpellsCast: totalSpells // <-- Export to UI
             };
             
             if (isAlly) pcs.push(combatantData);

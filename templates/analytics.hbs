@@ -223,6 +223,11 @@
                                     <span style="color: #fff;">{{totalChecks}} Checks</span> 
                                 {{else}}
                                     <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span> 
+                                    
+                                    <span style="color: #ffaa00; margin-left: 5px; font-size: 0.9em;" data-tooltip="Kills / Assists">
+                                        [{{kills}}K / {{assists}}A]
+                                    </span>
+
                                     {{#if healingDealt}}<span style="color: #44ff44; margin-left: 5px;">| {{healingDealt}} HEAL</span>{{/if}}
                                 {{/if}}
                             </span>
@@ -323,7 +328,12 @@
                                 {{#if ../canAudit}}
                                 <a data-action="swapAllegiance" data-actor="{{name}}" style="margin-right: 15px; color: #aaa; cursor: pointer; font-size: 0.9em;" data-tooltip="Defect to Party" onclick="event.preventDefault();"><i class="fas fa-exchange-alt"></i></a>
                                 {{/if}}
-                                <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span> 
+                                <<span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span> 
+                                
+                                <span style="color: #ffaa00; margin-left: 5px; font-size: 0.9em;" data-tooltip="Kills / Assists">
+                                    [{{kills}}K / {{assists}}A]
+                                </span>
+
                                 {{#if healingDealt}}<span style="color: #44ff44; margin-left: 5px;">| {{healingDealt}} HEAL</span>{{/if}}
                             </span>
                         </div>
