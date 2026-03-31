@@ -127,6 +127,12 @@ window.CombatParser = {
             const isApplication = !message.isDamageRoll && context.type !== "damage-roll" && (context.type === "damage-taken" || hasAppliedDamage || isNarrativeDamage);
             const isDamageRoll = message.isDamageRoll || context.type === "damage-roll";
             
+            // === MISSING DEFINITIONS FIX ===
+            const isAttack = context.type === "attack-roll";
+            const isSave = context.type === "saving-throw";
+            const isSkill = context.type === "skill-check" || context.type === "perception-check";
+            // ===============================
+            
             const checkIsAlly = (actDoc) => {
                 if (!actDoc) return false;
                 if (actDoc.type === "character" || actDoc.type === "familiar") return true;
@@ -155,18 +161,64 @@ window.CombatParser = {
             }
             if (minionName === "Unknown" || minionName === "") minionName = null;
 
+            // === START FIX: PRISTINE ABILITY NAMES ===
             let actionName = "Unknown Action";
-            if (message.flavor) {
-                let cleanFlavor = message.flavor.replace(/<\/h4>/gi, ' - ').replace(/<\/span>/gi, ' | ').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').replace(/\|\s*\|/g, '|').replace(/\s*\|\s*$/g, '').trim();
-                if (cleanFlavor) actionName = cleanFlavor;
-            } else {
-                actionName = message.item ? message.item.name : "Unknown Action";
+
+            // 1. Pristine Database Names
+            if (message.item && message.item.name) {
+                actionName = message.item.name;
+            } else if (systemFlags.origin && systemFlags.origin.name) {
+                actionName = systemFlags.origin.name;
+            } 
+            // 2. Clean HTML Headers
+            else if (message.flavor) {
+                let headerMatch = message.flavor.match(/<h[34][^>]*>(.*?)<\/h[34]>/i);
+                if (headerMatch) actionName = headerMatch[1].replace(/<[^>]+>/g, '').trim(); 
+                else actionName = message.flavor.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            } 
+            else if (context && context.title) actionName = context.title;
+
+            // 3. Strip System Fluff
+            actionName = actionName.replace(/^(?:Strike|Damage Roll|Damage|Save|Skill Check|Spell|Cast):\s*/i, '').trim();
+            actionName = actionName.replace(/\s*\[.*?\]\s*$/, '').trim();
+            if (!actionName || actionName === "") actionName = "Unknown Action";
+
+            // 4. CATCH SYSTEM TICKS (Fast Healing / Regen)
+            if (actionName === "Unknown Action" || actionName === "Damage Application") {
+                let lowerText = fullText.toLowerCase();
+                if (lowerText.includes("fast healing")) actionName = "Fast Healing";
+                else if (lowerText.includes("regeneration")) actionName = "Regeneration";
+                else if (lowerText.includes("persistent damage")) actionName = "Persistent Damage";
             }
 
+            // --- LEAVE THIS LINE ALONE ---
             const getActorLevel = (actorDoc) => {
                 if (!actorDoc) return 0;
                 return parseInt(actorDoc.system?.details?.level?.value) || 0;
             };
+
+            // === START INJECTION 1: SPELL RESOURCE TRACKING (FIXED) ===
+            const originType = systemFlags.origin?.type || message.item?.type;
+            const castLevel = systemFlags.castLevel || message.item?.system?.level?.value;
+            
+            if (originType === 'spell' && castLevel && resolvedOwner) {
+                if (!activeLedger.actors[resolvedOwner]) {
+                    // Proper, FULL initialization to prevent NaN poisoning
+                    activeLedger.actors[resolvedOwner] = {
+                        name: resolvedOwner, type: msgActor ? msgActor.type : "npc", level: getActorLevel(msgActor), isAlly: checkIsAlly(msgActor),
+                        damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
+                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
+                    };
+                }
+                let stats = activeLedger.actors[resolvedOwner];
+                if (!stats.spellsCast) stats.spellsCast = {};
+                if (!stats.spellsCast[castLevel]) stats.spellsCast[castLevel] = [];
+                
+                if (!stats.spellsCast[castLevel].includes(actionName)) {
+                    stats.spellsCast[castLevel].push(actionName);
+                }
+            }
+            // === END INJECTION 1 ===
 
             if (isApplication) {
                 const applied = systemFlags.appliedDamage;
@@ -213,12 +265,15 @@ window.CombatParser = {
 
                         let isCrossAllianceHealing = isHealing && (isTargetAlly !== isPrevSourceAlly);
                         let isDifferentTarget = prev.target !== "Unknown / AoE" && prev.target !== "None" && targetName !== "None" && prev.target !== targetName;
-                        let isPrevPersistent = prev.name && prev.name.toLowerCase().includes("persistent damage");
+                        let isPrevAttack = prev.type === "Attack" || prev.type === "Save" || prev.type === "Skill";
+                        // Treat Fast Healing/Regen as persistent so it never merges with attacks
+                        let isPrevPersistent = prev.name && (prev.name.toLowerCase().includes("persistent") || prev.name.toLowerCase().includes("fast healing") || prev.name.toLowerCase().includes("regeneration"));
+                        let isSelfHealingEffect = isHealing && actionName && (actionName.toLowerCase().includes("fast healing") || actionName.toLowerCase().includes("regeneration"));
 
                         let forceIntercept = false;
                         let interceptName = "Persistent Condition";
 
-                        if (isHealing && (isCrossAllianceHealing || isPrevPersistent)) {
+                        if (isHealing && (isCrossAllianceHealing || isPrevPersistent || isPrevAttack)) {
                             forceIntercept = true;
                             interceptName = "Fast Healing / Regen";
                         } else if (isDifferentTarget || (turnBoundaryCrossed && isPrevPersistent)) {
@@ -234,7 +289,10 @@ window.CombatParser = {
                             attackerDoc = targetDoc;
                         } else {
                             attackerName = prev.source;
-                            if (prev.name && prev.name !== "Unknown Action") actionName = prev.name; 
+                            // Only inherit the previous action name if we don't already have a valid one (like a Spell name)
+                            if (actionName === "Unknown Action" || actionName === "Damage Application") {
+                                if (prev.name && prev.name !== "Unknown Action") actionName = prev.name; 
+                            } 
                             if (prev.minion) inheritedMinion = prev.minion;
                             if (prev.target !== "Unknown / AoE" && prev.target !== "None") targetName = prev.target;
                             if (liveAct) {
@@ -259,7 +317,15 @@ window.CombatParser = {
                         attackerDoc = actualActor;
                     }
                 }
-
+// === SELF-HEALING ATTRIBUTION ===
+if (attackerName === "Unknown Source") {
+    if (isHealing || actionName === "Fast Healing" || actionName === "Regeneration") {
+        attackerName = targetName !== "None" ? targetName : "Environment";
+        attackerType = targetDoc ? targetDoc.type : "npc";
+        attackerLevel = targetLevel;
+        attackerDoc = targetDoc;
+    }
+}
                 let valueTotal = 0;
                 const textMatch = fullText.match(/(?:damaged for|healed|takes|restored).*?(\d+)/i) || fullText.match(/(\d+)\s*(?:HP|Damage|DMG|Heal)/i);
                 if (textMatch) valueTotal = parseInt(textMatch[1]);
@@ -267,9 +333,8 @@ window.CombatParser = {
                     const allNums = fullText.match(/(\d+)/g);
                     if (allNums && allNums.length > 0) valueTotal = parseInt(allNums[allNums.length - 1]);
                 }
-
-                if (/(?:unscathed|completely absorbing)/i.test(fullText)) valueTotal = 0;
-
+                
+                // Keep your original mitigated check right beneath it
                 if (!activeLedger.actors[attackerName]) {
                     activeLedger.actors[attackerName] = {
                         name: attackerName, type: attackerType, level: attackerLevel, isAlly: checkIsAlly(attackerDoc),
@@ -306,25 +371,58 @@ window.CombatParser = {
                 }
                 if (/(?:unconscious|dying|dead|destroyed|kill)/i.test(fullText)) isKill = true;
 
+                // === START FIX: TRUE EFFECTIVE HP (OVERHEAL/OVERKILL) ===
+                let effectiveValue = valueTotal;
+                let overValue = 0;
+
+                if (targetDoc && targetDoc.system?.attributes?.hp) {
+                    // Try to grab the exact HP from the split-second before the update
+                    let oldHp = window.CombatParser.hpCache?.[targetDoc.id];
+                    
+                    if (oldHp !== undefined) {
+                        let newHp = targetDoc.system.attributes.hp.value;
+                        if (isHealing) {
+                            let actualDelta = newHp - oldHp;
+                            if (actualDelta < 0) actualDelta = 0;
+                            effectiveValue = Math.min(valueTotal, actualDelta);
+                            overValue = valueTotal - effectiveValue;
+                        } else {
+                            let actualDelta = oldHp - newHp;
+                            if (actualDelta < 0) actualDelta = 0;
+                            effectiveValue = Math.min(valueTotal, actualDelta);
+                            overValue = valueTotal - effectiveValue;
+                        }
+                        // Clear the cache so it's fresh for next time
+                        delete window.CombatParser.hpCache[targetDoc.id];
+                    }
+                }
+
+                stats.effectiveDamage = (stats.effectiveDamage || 0) + (isHealing ? 0 : effectiveValue);
+                stats.overkill = (stats.overkill || 0) + (isHealing ? 0 : overValue);
+                stats.effectiveHealing = (stats.effectiveHealing || 0) + (isHealing ? effectiveValue : 0);
+                stats.overheal = (stats.overheal || 0) + (isHealing ? overValue : 0);
+
                 if (isHealing) {
-                    stats.healingDealt += valueTotal;
-                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: "Heal", name: actionName, result: `${valueTotal} HEALED`, detail: `Actual HP restored via healing.`, damageVal: 0, healVal: valueTotal, minion: inheritedMinion };
+                    stats.healingDealt += effectiveValue; // ONLY ADD EFFECTIVE
+                    let resText = overValue > 0 ? `${effectiveValue} HEALED <span style="color:#aaa; font-size:0.8em;">(${overValue} Overheal)</span>` : `${effectiveValue} HEALED`;
+                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: "Heal", name: actionName, result: resText, detail: `Raw Attempted: ${valueTotal}`, damageVal: 0, healVal: effectiveValue, minion: inheritedMinion };
                     stats.history.push(logEntry);
                     activeLedger.masterLog.push(logEntry);
                 } else {
-                    stats.damageDealt += valueTotal;
+                    stats.damageDealt += effectiveValue; // ONLY ADD EFFECTIVE
                     if (isKill) stats.kills++;
-                    activeLedger.totalDamage += valueTotal;
+                    activeLedger.totalDamage += effectiveValue;
                     
-                    let resultText = valueTotal === 0 ? `FULLY MITIGATED` : `${valueTotal} DMG APPLIED`;
+                    let resultText = effectiveValue === 0 ? `FULLY MITIGATED` : `${effectiveValue} DMG APPLIED`;
+                    if (overValue > 0) resultText += ` <span style="color:#aaa; font-size:0.8em;">(${overValue} Overkill)</span>`;
                     if (isKill) resultText += " 💀";
                     if (mitigatedTotal > 0) resultText += ` <span style="color:#aaa;">(${mitigatedTotal} BLKD)</span>`;
                     
-                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: valueTotal === 0 ? "Mitigation" : "Damage", name: actionName, result: resultText, detail: `Actual HP removed after saves, weaknesses, and resistances.`, damageVal: valueTotal, healVal: 0, minion: inheritedMinion };
+                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: effectiveValue === 0 ? "Mitigation" : "Damage", name: actionName, result: resultText, detail: `Raw Attempted: ${valueTotal}`, damageVal: effectiveValue, healVal: 0, minion: inheritedMinion };
                     stats.history.push(logEntry);
                     activeLedger.masterLog.push(logEntry);
                 }
-                return; 
+                return;
             }
 
             if (isDamageRoll && message.rolls) {
@@ -386,18 +484,38 @@ window.CombatParser = {
                 let detailStr = damageDetails.length > 0 ? damageDetails.join(', ') : `Rolled ${message.rolls.length} dice`;
                 let merged = false;
                 
+                // === START INJECTION 3B: MERGE DAMAGE BY EVENT LINK ===
+                let dmgLinkId = message.item?.id || systemFlags.context?.item || systemFlags.origin?.uuid;
+                if (!dmgLinkId) {
+                    let baseName = actionName.replace(/^(?:Strike|Damage|Damage Roll|Save|Skill):\s*/i, '').trim();
+                    dmgLinkId = baseName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                }
+
                 if (stats) {
                     for (let i = stats.history.length - 1; i >= 0; i--) {
                         let prev = stats.history[i];
-                        if (prev.type === "Attack" && prev.round === currentRound && !prev.hasDamageRoll) {
+                        
+                        // Check if it's the exact same weapon/spell ID in the same round
+                        let isSameLink = dmgLinkId && prev.eventLinkId === dmgLinkId && prev.round === currentRound;
+                        // RESTORED FALLBACK: If IDs fail, rely on your original logic
+                        let isFallback = prev.type === "Attack" && prev.round === currentRound;
+
+                        if ((isSameLink || isFallback) && !prev.hasDamageRoll) {
                             prev.result += ` 🎲 [${rollTotal}]`;
                             prev.detail += `<br><span style="color:#aaa;"><b>Dice Pool:</b> ${detailStr}</span>`;
                             prev.hasDamageRoll = true;
+                            
+                            // Optional Polish: Clean up the name so it looks uniform in the UI
+                            if (prev.name.includes("Strike:")) {
+                                prev.name = prev.name.replace(/Strike:\s*/i, '').trim();
+                            }
+                            
                             merged = true;
                             break;
                         }
                     }
                 }
+                // === END INJECTION 3B ===
 
                 if (!merged) {
                     const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: actorName, target: "None", type: "Roll", name: actionName, result: `Dice Pool: ${rollTotal}`, detail: detailStr, damageVal: 0, healVal: 0, minion: minionName };
@@ -499,10 +617,20 @@ window.CombatParser = {
                     detailHtml += `<br><div style="margin-top:6px; padding-top:6px; border-top:1px dashed #444; font-size:0.85em; line-height:1.4;">${extraDetails.join('<br>')}</div>`;
                 }
 
+                // === START INJECTION 3A: CAPTURE EVENT LINK ===
+                // Use the core Foundry Item ID first. If missing, regex out the true base name.
+                let eventLinkId = message.item?.id || systemFlags.context?.item || systemFlags.origin?.uuid;
+                if (!eventLinkId) {
+                    let baseName = actionName.replace(/^(?:Strike|Damage|Damage Roll|Save|Skill):\s*/i, '').trim();
+                    eventLinkId = baseName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                }
+                // === END INJECTION 3A ===
+
                 const logEntry = {
                     id: foundry.utils.randomID(), round: currentRound, source: actorName, target: targetName,
                     type: rollType, name: actionName, result: resultText,
-                    detail: detailHtml, damageVal: 0, healVal: 0, tags: robustTags, minion: minionName
+                    detail: detailHtml, damageVal: 0, healVal: 0, tags: robustTags, minion: minionName,
+                    eventLinkId: eventLinkId // <--- ADD THIS PROPERTY
                 };
                 stats.history.push(logEntry);
                 activeLedger.masterLog.push(logEntry);
@@ -824,9 +952,9 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     for (const [encounterName, data] of Object.entries(db)) {
                         htmlContent += `<h2>${encounterName}</h2><p><b>Total Damage:</b> ${data.totalDamage}</p>
                         <table border="1" cellpadding="5" cellspacing="0" style="width: 100%; border-collapse: collapse; font-size: 0.9em; text-align: left;">
-                        <thead style="background: rgba(0,0,0,0.1);"><tr><th>Combatant</th><th>DMG Dealt</th><th>Kills</th><th>Mitigated</th><th>Rolls</th></tr></thead><tbody>`;
+                        <thead style="background: rgba(0,0,0,0.1);"><tr><th>Combatant</th><th>DMG Dealt</th><th>Healing</th><th>Kills</th><th>Mitigated</th><th>Rolls</th></tr></thead><tbody>`;
                         
-                        const actors = Object.values(data.actors || {}).sort((a,b) => b.damageDealt - a.damageDealt);
+                        const actors = Object.values(data.actors || {}).sort((a,b) => (b.damageDealt + (b.healingDealt||0)) - (a.damageDealt + (a.healingDealt||0)));
                         for (const a of actors) {
                             const totalAttacks = (a.hits||0) + (a.misses||0) + (a.crits||0) + (a.critMisses||0);
                             const rawRolls = a.d20Rolls || Array(20).fill(0);
@@ -834,6 +962,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                             const displayedRolls = Math.max(totalAttacks, totalD20s);
                             
                             htmlContent += `<tr><td><b>${a.name}</b></td><td style="color: #aa4444;">${a.damageDealt || 0}</td>
+                            <td style="color: #44ff44;">${a.healingDealt || 0}</td>
                             <td>${a.kills || 0}</td><td style="color: #aaaaaa;">${a.mitigated || 0}</td><td>${displayedRolls}</td></tr>`;
                         }
                         htmlContent += `</tbody></table><hr>`;
@@ -1272,7 +1401,71 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
         let totalCombatTimeSeconds = 0;
         let pcTimeMap = {};
         let gmTimeTotal = 0;
+// === START FRONTEND VISUAL COLLAPSER ===
+const collapseLogs = (rawLogs) => {
+    let collapsed = [];
+    let openGroup = null;
 
+    rawLogs.forEach(log => {
+        // Clone the log so we don't accidentally mutate the saved database
+        let l = foundry.utils.deepClone(log);
+        
+        if (l.type === "Attack" || l.type === "Skill" || l.type === "Save" || l.type === "Roll") {
+            openGroup = l;
+            collapsed.push(openGroup);
+        } 
+        else if (l.type === "Damage" || l.type === "Heal" || l.type === "Mitigation") {
+            // Check if this damage application belongs to the current open roll
+            if (openGroup && openGroup.round === l.round && (openGroup.name === l.name || openGroup.name.includes(l.name) || l.name.includes(openGroup.name))) {
+                
+                // 1. Tally the total damage applied for the collapsed summary
+                openGroup.totalFoldedDmg = (openGroup.totalFoldedDmg || 0) + (l.damageVal || l.healVal || 0);
+                
+                // 2. Track multiple targets (AoE)
+                openGroup.foldedTargets = openGroup.foldedTargets || [];
+                if (l.target && l.target !== "None" && !openGroup.foldedTargets.includes(l.target)) {
+                    openGroup.foldedTargets.push(l.target);
+                }
+                
+                // 3. Append the explicit application details to the expanded dropdown
+                let isDmg = l.type === "Damage";
+                let isHeal = l.type === "Heal";
+                let valColor = isDmg ? '#ff6666' : (isHeal ? '#44ff44' : '#aaaaaa');
+                let appText = isDmg ? `${l.damageVal} DMG` : (isHeal ? `${l.healVal} HEAL` : `MITIGATED`);
+                
+                let newDetailLine = `<div style="margin-top: 6px; padding-top: 6px; border-top: 1px dotted #555;">`;
+                newDetailLine += `<b>Applied to ${l.target}:</b> <span style="color:${valColor};">${appText}</span>`;
+                newDetailLine += `</div>`;
+                
+                openGroup.detail += newDetailLine;
+                
+            } else {
+                // It's an orphan damage application (like Persistent Damage). Keep it as its own line.
+                collapsed.push(l);
+            }
+        } else {
+            collapsed.push(l);
+        }
+    });
+
+    // Clean up the headers of the collapsed groups
+    collapsed.forEach(l => {
+        if (l.totalFoldedDmg !== undefined) {
+            let isHeal = l.type === "Heal" || (l.result && l.result.includes("HEAL"));
+            let valColor = isHeal ? '#44ff44' : '#ff6666';
+            
+            // Modifies the collapsed text: e.g. "CRITICAL SUCCESS 🎲 [15] ➔ 9 APPLIED"
+            l.result = `${l.result} <span style="color:#aaa; margin: 0 4px;">➔</span> <span style="color:${valColor}; font-weight:bold;">${l.totalFoldedDmg} APPLIED</span>`;
+            
+            if (l.foldedTargets && l.foldedTargets.length > 0) {
+                l.target = l.foldedTargets.join(", ");
+            }
+        }
+    });
+
+    return collapsed;
+};
+// === END FRONTEND VISUAL COLLAPSER ===
         Object.values(activeLedger.actors).forEach(a => {
             const rawRolls = a.d20Rolls || Array(20).fill(0);
             
@@ -1366,8 +1559,12 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 .map(ab => {
                     return { 
                         ...ab, 
+                        // Safely clear out the "novel" text so the Overview table stays perfectly clean
+                        detail: "", 
+                        result: "", 
+                        
                         dmgPct: a.damageDealt > 0 ? Math.round((ab.damage / a.damageDealt) * 100) : 0,
-                        hasBoth: ab.damage > 0 && ab.healing > 0 // ADD THIS LINE
+                        hasBoth: ab.damage > 0 && ab.healing > 0 
                     };
                 })
                 .sort((x, y) => (y.damage + y.healing) - (x.damage + x.healing));
@@ -1424,7 +1621,9 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 ...a, damagePercent, dpr, healingDealt: a.healingDealt || 0, accuracy, d20Graph, 
                 maxDamageDealt, maxDamageTaken, maxHealDealt, avgD20Display, totalChecks, successRate, totalTurnTimeStr, avgTurnTimeStr, maxTurnTimeStr, isAlly,
                 abilityBreakdown,
-                logs: processedLogs.filter(l => !l.isDivider && !l.isTurnSummary && l.source === a.name)
+                effectiveDamage: a.effectiveDamage || 0,
+                overkill: a.overkill || 0,
+                logs: collapseLogs(processedLogs.filter(l => !l.isDivider && !l.isTurnSummary && l.source === a.name))
             };
             
             if (isAlly) pcs.push(combatantData);
@@ -1440,8 +1639,8 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             actorGroups.push({ 
                 name: a.name, 
                 isParty: a.isAlly, 
-                canViewActor: a.isAlly || isGM, // ADD THIS LINE
-                logs: aLogs,
+                canViewActor: a.isAlly || isGM, 
+                logs: collapseLogs(aLogs),
                 totalTurnTimeStr: a.totalTurnTimeStr,
                 avgTurnTimeStr: a.avgTurnTimeStr,
                 maxTurnTimeStr: a.maxTurnTimeStr,
@@ -1795,3 +1994,12 @@ Hooks.on('renderCombatTracker', (app, html) => {
     btnContainer.appendChild(btn);
     header.after(btnContainer);
 });
+// === START HP CACHE HOOK ===
+Hooks.on('preUpdateActor', (actor, update) => {
+    // Take a snapshot of the old HP right before a heal or damage applies
+    if (update.system && update.system.attributes && update.system.attributes.hp && update.system.attributes.hp.value !== undefined) {
+        if (!window.CombatParser.hpCache) window.CombatParser.hpCache = {};
+        window.CombatParser.hpCache[actor.id] = actor.system.attributes.hp.value;
+    }
+});
+// === END HP CACHE HOOK ===
