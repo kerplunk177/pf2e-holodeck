@@ -100,6 +100,7 @@ window.CombatParser = {
         
         history[encounterName] = foundry.utils.deepClone(this.ledger);
         await game.settings.set('pf2e-holodeck', targetDbName, history);
+        if (game.user.isGM) await game.settings.set('pf2e-holodeck', 'activeTactical', {});
         this.resetLedger();
     },
 
@@ -113,7 +114,19 @@ window.CombatParser = {
         await game.settings.set('pf2e-holodeck', 'explorationHistory', history);
         this.resetExplorationLedger();
     },
+    saveLiveBackup: async function() {
+        if (!game.user.isGM) return;
+        await game.settings.set('pf2e-holodeck', 'activeTactical', this.ledger);
+    },
 
+    restoreLiveBackup: function() {
+        let saved = game.settings.get('pf2e-holodeck', 'activeTactical');
+        // Only restore if there's actual data AND an active combat is currently running
+        if (saved && saved.actors && Object.keys(saved.actors).length > 0 && game.combat && game.combat.active) {
+            this.ledger = saved;
+            console.log("Combat Forensics | Restored mid-session combat from backup.");
+        }
+    },
     parseMessage: function(message) {
         try {
             const systemFlags = message.flags?.pf2e || message.flags?.sf2e || {};
@@ -668,6 +681,7 @@ window.CombatParser = {
                 stats.history.push(logEntry);
                 activeLedger.masterLog.push(logEntry);
             }
+            if (isCombatPhase) this.saveLiveBackup();
         } catch (e) {}
     }
 };
@@ -1985,6 +1999,13 @@ Hooks.once('init', () => {
         type: Boolean,
         default: false
     });
+    game.settings.register('pf2e-holodeck', 'activeTactical', {
+        name: "Active Combat Backup",
+        scope: 'world',
+        config: false,
+        type: Object,
+        default: {}
+    });
     
     game.settings.register('pf2e-holodeck', 'auditPermission', {
         name: "Attribution Audit Role",
@@ -2011,6 +2032,7 @@ Hooks.once('init', () => {
 });
 
 Hooks.once('ready', () => {
+    window.CombatParser.restoreLiveBackup(); // ADD THIS LINE HERE
     if (game.user.isGM) setInterval(() => { window.CombatParser.saveExplorationArchive(); }, 30 * 60 * 1000); 
 });
 
@@ -2083,6 +2105,8 @@ Hooks.on('updateCombat', (combat, changed) => {
         window.combatForensicsInstance.selectedEncounter = "current";
         window.combatForensicsInstance.render(true);
     }
+
+    window.CombatParser.saveLiveBackup();
 });
 
 Hooks.on('combatStart', (combat, updateData) => {
