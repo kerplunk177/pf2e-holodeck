@@ -81,7 +81,6 @@ window.CombatParser = {
                     name: actorName, type: actorType, level: actorLevel, isAlly: allyStatus,
                     damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
                     nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, 
-                    assists: 0, spellsCast: 0, focusSpent: 0, contributors: [],
                     expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
                 };
             } else {
@@ -114,6 +113,7 @@ window.CombatParser = {
         await game.settings.set('pf2e-holodeck', 'explorationHistory', history);
         this.resetExplorationLedger();
     },
+
     saveLiveBackup: async function() {
         if (!game.user.isGM) return;
         await game.settings.set('pf2e-holodeck', 'activeTactical', this.ledger);
@@ -121,12 +121,12 @@ window.CombatParser = {
 
     restoreLiveBackup: function() {
         let saved = game.settings.get('pf2e-holodeck', 'activeTactical');
-        // Only restore if there's actual data AND an active combat is currently running
         if (saved && saved.actors && Object.keys(saved.actors).length > 0 && game.combat && game.combat.active) {
             this.ledger = saved;
             console.log("Combat Forensics | Restored mid-session combat from backup.");
         }
     },
+
     parseMessage: function(message) {
         try {
             const systemFlags = message.flags?.pf2e || message.flags?.sf2e || {};
@@ -137,16 +137,9 @@ window.CombatParser = {
             const activeLedger = isCombatPhase ? this.ledger : this.explorationLedger;
 
             const hasAppliedDamage = !!systemFlags.appliedDamage;
-            
-            const isItemCardBroadcast = context.type === "spell-cast" || (message.item && !message.isDamageRoll && !context.type);
-            const isNarrativeDamage = !isItemCardBroadcast && /(?:unscathed|absorbing|takes .* damage|healed|restored|reduced by|mitigated)/i.test(fullText);
-            
+            const isNarrativeDamage = /(?:unscathed|absorbing|takes \d+ damage|healed \d+|restored \d+|\d+ healing|reduced by|mitigated)/i.test(fullText);
             const isApplication = !message.isDamageRoll && context.type !== "damage-roll" && (context.type === "damage-taken" || hasAppliedDamage || isNarrativeDamage);
             const isDamageRoll = message.isDamageRoll || context.type === "damage-roll";
-            
-            const isAttack = context.type === "attack-roll";
-            const isSave = context.type === "saving-throw";
-            const isSkill = context.type === "skill-check" || context.type === "perception-check";
             
             const checkIsAlly = (actDoc) => {
                 if (!actDoc) return false;
@@ -177,28 +170,11 @@ window.CombatParser = {
             if (minionName === "Unknown" || minionName === "") minionName = null;
 
             let actionName = "Unknown Action";
-
-            if (message.item && message.item.name) {
-                actionName = message.item.name;
-            } else if (systemFlags.origin && systemFlags.origin.name) {
-                actionName = systemFlags.origin.name;
-            } 
-            else if (message.flavor) {
-                let headerMatch = message.flavor.match(/<h[34][^>]*>(.*?)<\/h[34]>/i);
-                if (headerMatch) actionName = headerMatch[1].replace(/<[^>]+>/g, '').trim(); 
-                else actionName = message.flavor.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-            } 
-            else if (context && context.title) actionName = context.title;
-
-            actionName = actionName.replace(/^(?:Strike|Damage Roll|Damage|Save|Skill Check|Spell|Cast):\s*/i, '').trim();
-            actionName = actionName.replace(/\s*\[.*?\]\s*$/, '').trim();
-            if (!actionName || actionName === "") actionName = "Unknown Action";
-
-            if (actionName === "Unknown Action" || actionName === "Damage Application") {
-                let lowerText = fullText.toLowerCase();
-                if (lowerText.includes("fast healing")) actionName = "Fast Healing";
-                else if (lowerText.includes("regeneration")) actionName = "Regeneration";
-                else if (lowerText.includes("persistent damage")) actionName = "Persistent Damage";
+            if (message.flavor) {
+                let cleanFlavor = message.flavor.replace(/<\/h4>/gi, ' - ').replace(/<\/span>/gi, ' | ').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').replace(/\|\s*\|/g, '|').replace(/\s*\|\s*$/g, '').trim();
+                if (cleanFlavor) actionName = cleanFlavor;
+            } else {
+                actionName = message.item ? message.item.name : "Unknown Action";
             }
 
             const getActorLevel = (actorDoc) => {
@@ -206,40 +182,18 @@ window.CombatParser = {
                 return parseInt(actorDoc.system?.details?.level?.value) || 0;
             };
 
-            const originType = systemFlags.origin?.type || message.item?.type;
-            const castLevel = systemFlags.castLevel || message.item?.system?.level?.value;
-            const traits = message.item?.system?.traits?.value || [];
-            
-            const isCantrip = traits.includes("cantrip");
-            const isFocus = message.item?.system?.category === "focus" || systemFlags.origin?.category === "focus" || traits.includes("focus");
-            
-            if (originType === 'spell' && castLevel && resolvedOwner) {
-                if (!activeLedger.actors[resolvedOwner]) {
-                    activeLedger.actors[resolvedOwner] = {
-                        name: resolvedOwner, type: msgActor ? msgActor.type : "npc", level: getActorLevel(msgActor), isAlly: checkIsAlly(msgActor),
-                        damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
-                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [],
-                        assists: 0, spellsCast: {}, focusSpent: 0, contributors: []
-                    };
-                }
-                let stats = activeLedger.actors[resolvedOwner];
-                
-                if (!isCantrip) {
-                    if (!stats.spellsCast) stats.spellsCast = {};
-                    if (!stats.spellsCast[castLevel]) stats.spellsCast[castLevel] = [];
-                    if (!stats.spellsCast[castLevel].includes(actionName)) {
-                        stats.spellsCast[castLevel].push(actionName);
-                    }
-                }
-                
-                if (isFocus) {
-                    stats.focusSpent = (stats.focusSpent || 0) + 1;
-                }
-            }
-
-            if (isApplication) {
+            if (isApplication || (context.type === "damage-roll" && message.flags["aoe-easy-resolve"])) {
                 const applied = systemFlags.appliedDamage;
-                const isHealing = applied ? applied.isHealing === true : /(?:healed|restored)/i.test(fullText);
+                
+                // --- AOE EASY RESOLVE INTERCEPTOR ---
+                let aoeHealValue = 0;
+                if (message.flags["aoe-easy-resolve"]?.damageTotal !== undefined) {
+                     const isAoEHealing = /(?:healed|restored|Healing)/i.test(message.flags["aoe-easy-resolve"].damageTooltip || fullText);
+                     if (isAoEHealing) aoeHealValue = parseInt(message.flags["aoe-easy-resolve"].damageTotal);
+                }
+                
+                const isHealing = applied ? applied.isHealing === true : (aoeHealValue > 0 || /(?:healed|restored|healing)/i.test(fullText));
+                // ------------------------------------
 
                 let attackerName = "Unknown Source";
                 let attackerType = "npc";
@@ -282,14 +236,12 @@ window.CombatParser = {
 
                         let isCrossAllianceHealing = isHealing && (isTargetAlly !== isPrevSourceAlly);
                         let isDifferentTarget = prev.target !== "Unknown / AoE" && prev.target !== "None" && targetName !== "None" && prev.target !== targetName;
-                        let isPrevAttack = prev.type === "Attack" || prev.type === "Save" || prev.type === "Skill";
-                        let isPrevPersistent = prev.name && (prev.name.toLowerCase().includes("persistent") || prev.name.toLowerCase().includes("fast healing") || prev.name.toLowerCase().includes("regeneration"));
-                        let isSelfHealingEffect = isHealing && actionName && (actionName.toLowerCase().includes("fast healing") || actionName.toLowerCase().includes("regeneration"));
+                        let isPrevPersistent = prev.name && prev.name.toLowerCase().includes("persistent damage");
 
                         let forceIntercept = false;
                         let interceptName = "Persistent Condition";
 
-                        if (isHealing && (isCrossAllianceHealing || isPrevPersistent || isPrevAttack)) {
+                        if (isHealing && (isCrossAllianceHealing || isPrevPersistent)) {
                             forceIntercept = true;
                             interceptName = "Fast Healing / Regen";
                         } else if (isDifferentTarget || (turnBoundaryCrossed && isPrevPersistent)) {
@@ -305,14 +257,8 @@ window.CombatParser = {
                             attackerDoc = targetDoc;
                         } else {
                             attackerName = prev.source;
-                            
-                            if (prev.name && prev.name !== "Unknown Action") {
-                                actionName = prev.name;
-                            } 
-                            
-                            // FIX: Strictly inherit the preceding attack's minion tag to prevent targets from hijacking it
-                            inheritedMinion = prev.minion || null;
-                            
+                            if (prev.name && prev.name !== "Unknown Action") actionName = prev.name; 
+                            if (prev.minion) inheritedMinion = prev.minion;
                             if (prev.target !== "Unknown / AoE" && prev.target !== "None") targetName = prev.target;
                             if (liveAct) {
                                 attackerType = liveAct.type;
@@ -336,24 +282,21 @@ window.CombatParser = {
                         attackerDoc = actualActor;
                     }
                 }
-                
-                if (attackerName === "Unknown Source") {
-                    if (isHealing || actionName === "Fast Healing" || actionName === "Regeneration") {
-                        attackerName = targetName !== "None" ? targetName : "Environment";
-                        attackerType = targetDoc ? targetDoc.type : "npc";
-                        attackerLevel = targetLevel;
-                        attackerDoc = targetDoc;
+
+                let valueTotal = 0;
+                if (aoeHealValue > 0) {
+                     valueTotal = aoeHealValue;
+                } else {
+                    const textMatch = fullText.match(/(?:damaged for|healed|takes|restored|healing).*?(\d+)/i) || fullText.match(/(\d+)\s*(?:HP|Damage|DMG|Heal|Healing)/i);
+                    if (textMatch) valueTotal = parseInt(textMatch[1]);
+                    else {
+                        const allNums = fullText.match(/(\d+)/g);
+                        if (allNums && allNums.length > 0) valueTotal = parseInt(allNums[allNums.length - 1]);
                     }
                 }
-                
-                let valueTotal = 0;
-                const textMatch = fullText.match(/(?:damaged for|healed|takes|restored).*?(\d+)/i) || fullText.match(/(\d+)\s*(?:HP|Damage|DMG|Heal)/i);
-                if (textMatch) valueTotal = parseInt(textMatch[1]);
-                else {
-                    const allNums = fullText.match(/(\d+)/g);
-                    if (allNums && allNums.length > 0) valueTotal = parseInt(allNums[allNums.length - 1]);
-                }
-                
+
+                if (/(?:unscathed|completely absorbing)/i.test(fullText)) valueTotal = 0;
+
                 if (!activeLedger.actors[attackerName]) {
                     activeLedger.actors[attackerName] = {
                         name: attackerName, type: attackerType, level: attackerLevel, isAlly: checkIsAlly(attackerDoc),
@@ -390,71 +333,27 @@ window.CombatParser = {
                 }
                 if (/(?:unconscious|dying|dead|destroyed|kill)/i.test(fullText)) isKill = true;
 
-                let effectiveValue = valueTotal;
-                let overValue = 0;
-
-                if (targetDoc && targetDoc.system?.attributes?.hp) {
-                    let oldHp = window.CombatParser.hpCache?.[targetDoc.id];
-                    if (oldHp !== undefined) {
-                        let newHp = targetDoc.system.attributes.hp.value;
-                        if (isHealing) {
-                            let actualDelta = newHp - oldHp;
-                            if (actualDelta < 0) actualDelta = 0;
-                            effectiveValue = Math.min(valueTotal, actualDelta);
-                            overValue = valueTotal - effectiveValue;
-                        } else {
-                            let actualDelta = oldHp - newHp;
-                            if (actualDelta < 0) actualDelta = 0;
-                            effectiveValue = Math.min(valueTotal, actualDelta);
-                            overValue = valueTotal - effectiveValue;
-                        }
-                        delete window.CombatParser.hpCache[targetDoc.id];
-                    }
-                }
-
-                stats.effectiveDamage = (stats.effectiveDamage || 0) + (isHealing ? 0 : effectiveValue);
-                stats.overkill = (stats.overkill || 0) + (isHealing ? 0 : overValue);
-                stats.effectiveHealing = (stats.effectiveHealing || 0) + (isHealing ? effectiveValue : 0);
-                stats.overheal = (stats.overheal || 0) + (isHealing ? overValue : 0);
-
                 if (isHealing) {
-                    stats.healingDealt += effectiveValue; 
-                    let resText = overValue > 0 ? `${effectiveValue} HEALED <span style="color:#aaa; font-size:0.8em;">(${overValue} Overheal)</span>` : `${effectiveValue} HEALED`;
-                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: "Heal", name: actionName, result: resText, detail: `Raw Attempted: ${valueTotal}`, damageVal: 0, healVal: effectiveValue, minion: inheritedMinion };
+                    stats.healingDealt += valueTotal;
+                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: "Heal", name: actionName, result: `${valueTotal} HEALED`, detail: `Actual HP restored via healing.`, damageVal: 0, healVal: valueTotal, minion: inheritedMinion };
                     stats.history.push(logEntry);
                     activeLedger.masterLog.push(logEntry);
                 } else {
-                    stats.damageDealt += effectiveValue; 
+                    stats.damageDealt += valueTotal;
                     if (isKill) stats.kills++;
-                    activeLedger.totalDamage += effectiveValue;
+                    activeLedger.totalDamage += valueTotal;
                     
-                    if (targetName !== "None" && activeLedger.actors[targetName]) {
-                        let targetStats = activeLedger.actors[targetName];
-                        if (!targetStats.contributors || !Array.isArray(targetStats.contributors)) {
-                            targetStats.contributors = [];
-                        }
-                        if (!targetStats.contributors.includes(attackerName)) {
-                            targetStats.contributors.push(attackerName);
-                        }
-                        if (isKill) {
-                            targetStats.contributors.forEach(contributor => {
-                                if (contributor !== attackerName && activeLedger.actors[contributor]) {
-                                    activeLedger.actors[contributor].assists = (activeLedger.actors[contributor].assists || 0) + 1;
-                                }
-                            });
-                        }
-                    }
-                    
-                    let resultText = effectiveValue === 0 ? `FULLY MITIGATED` : `${effectiveValue} DMG APPLIED`;
-                    if (overValue > 0) resultText += ` <span style="color:#aaa; font-size:0.8em;">(${overValue} Overkill)</span>`;
+                    let resultText = valueTotal === 0 ? `FULLY MITIGATED` : `${valueTotal} DMG APPLIED`;
                     if (isKill) resultText += " 💀";
                     if (mitigatedTotal > 0) resultText += ` <span style="color:#aaa;">(${mitigatedTotal} BLKD)</span>`;
                     
-                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: effectiveValue === 0 ? "Mitigation" : "Damage", name: actionName, result: resultText, detail: `Raw Attempted: ${valueTotal}`, damageVal: effectiveValue, healVal: 0, minion: inheritedMinion };
+                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: valueTotal === 0 ? "Mitigation" : "Damage", name: actionName, result: resultText, detail: `Actual HP removed after saves, weaknesses, and resistances.`, damageVal: valueTotal, healVal: 0, minion: inheritedMinion };
                     stats.history.push(logEntry);
                     activeLedger.masterLog.push(logEntry);
                 }
-                return;
+                
+                if (isCombatPhase) this.saveLiveBackup();
+                return; 
             }
 
             if (isDamageRoll && message.rolls) {
@@ -516,27 +415,13 @@ window.CombatParser = {
                 let detailStr = damageDetails.length > 0 ? damageDetails.join(', ') : `Rolled ${message.rolls.length} dice`;
                 let merged = false;
                 
-                let dmgLinkId = message.item?.id || systemFlags.context?.item || systemFlags.origin?.uuid;
-                if (!dmgLinkId) {
-                    let baseName = actionName.replace(/^(?:Strike|Damage|Damage Roll|Save|Skill):\s*/i, '').trim();
-                    dmgLinkId = baseName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-                }
-
                 if (stats) {
                     for (let i = stats.history.length - 1; i >= 0; i--) {
                         let prev = stats.history[i];
-                        let isSameLink = dmgLinkId && prev.eventLinkId === dmgLinkId && prev.round === currentRound;
-                        let isFallback = prev.type === "Attack" && prev.round === currentRound;
-
-                        if ((isSameLink || isFallback) && !prev.hasDamageRoll) {
+                        if (prev.type === "Attack" && prev.round === currentRound && !prev.hasDamageRoll) {
                             prev.result += ` 🎲 [${rollTotal}]`;
                             prev.detail += `<br><span style="color:#aaa;"><b>Dice Pool:</b> ${detailStr}</span>`;
                             prev.hasDamageRoll = true;
-                            
-                            if (prev.name.includes("Strike:")) {
-                                prev.name = prev.name.replace(/Strike:\s*/i, '').trim();
-                            }
-                            
                             merged = true;
                             break;
                         }
@@ -548,6 +433,8 @@ window.CombatParser = {
                     if (stats) stats.history.push(logEntry);
                     activeLedger.masterLog.push(logEntry);
                 }
+                
+                if (isCombatPhase) this.saveLiveBackup();
                 return;
             }
 
@@ -556,10 +443,20 @@ window.CombatParser = {
                 const itemUuid = systemFlags?.item?.uuid || context.item;
                 if (!actor || (!context.type && !itemUuid)) return;
 
-                let actorName = resolvedOwner;
-                let actorLevel = getActorLevel(actor);
-                let actorType = actor.type;
-                let isAllyStatus = checkIsAlly(actor);
+                const actorName = resolvedOwner;
+                const actorLevel = getActorLevel(actor);
+
+                if (!activeLedger.actors[actorName]) {
+                    activeLedger.actors[actorName] = {
+                        name: actorName, type: actor.type, level: actorLevel, isAlly: checkIsAlly(actor),
+                        damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
+                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
+                    };
+                }
+
+                let stats = activeLedger.actors[actorName];
+                let currentRound = game.combat ? game.combat.round : 1;
+                if (currentRound > activeLedger.maxRounds) activeLedger.maxRounds = currentRound;
 
                 let targetName = "None";
                 if (context.target?.token && canvas.scene) {
@@ -569,46 +466,13 @@ window.CombatParser = {
                     targetName = Array.from(game.user.targets)[0].name;
                 }
 
-                if (isSave && systemFlags.origin?.actor) {
-                    const originDoc = fromUuidSync(systemFlags.origin.actor);
-                    if (originDoc) {
-                        const actualActor = originDoc.actor || originDoc;
-                        targetName = actorName; 
-                        let rawName = window.CombatParser.getCanonicalName(actualActor, actualActor.name);
-                        actorName = window.CombatParser.resolveOwner(rawName, actualActor, actualActor.name); 
-                        actorLevel = getActorLevel(actualActor);
-                        actorType = actualActor.type;
-                        isAllyStatus = checkIsAlly(actualActor);
-                    }
-                }
-
-                if (!activeLedger.actors[actorName]) {
-                    activeLedger.actors[actorName] = {
-                        name: actorName, type: actorType, level: actorLevel, isAlly: isAllyStatus,
-                        damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
-                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [],
-                        assists: 0, spellsCast: {}, focusSpent: 0, contributors: []
-                    };
-                }
-
-                let stats = activeLedger.actors[actorName];
-                let currentRound = game.combat ? game.combat.round : 1;
-                if (currentRound > activeLedger.maxRounds) activeLedger.maxRounds = currentRound;
-
                 const outcome = context.outcome; 
                 const isCrit = outcome === 'criticalSuccess' || outcome === 'critical-success';
                 
-                if (isSave) {
-                    if (outcome === 'success') stats.misses++;
-                    if (isCrit) stats.critMisses++;
-                    if (outcome === 'failure') stats.hits++;
-                    if (outcome === 'criticalFailure' || outcome === 'critical-failure') stats.crits++;
-                } else {
-                    if (outcome === 'success') stats.hits++;
-                    if (isCrit) stats.crits++;
-                    if (outcome === 'failure') stats.misses++;
-                    if (outcome === 'criticalFailure' || outcome === 'critical-failure') stats.critMisses++;
-                }
+                if (outcome === 'success') stats.hits++;
+                if (isCrit) stats.crits++;
+                if (outcome === 'failure') stats.misses++;
+                if (outcome === 'criticalFailure' || outcome === 'critical-failure') stats.critMisses++;
 
                 const isHeroPoint = context.isReroll || (context.options && context.options.includes("hero-point")) || /(?:hero point|reroll)/i.test(fullText);
                 if (isHeroPoint) {
@@ -666,22 +530,16 @@ window.CombatParser = {
                     detailHtml += `<br><div style="margin-top:6px; padding-top:6px; border-top:1px dashed #444; font-size:0.85em; line-height:1.4;">${extraDetails.join('<br>')}</div>`;
                 }
 
-                let eventLinkId = message.item?.id || systemFlags.context?.item || systemFlags.origin?.uuid;
-                if (!eventLinkId) {
-                    let baseName = actionName.replace(/^(?:Strike|Damage|Damage Roll|Save|Skill):\s*/i, '').trim();
-                    eventLinkId = baseName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-                }
-
                 const logEntry = {
                     id: foundry.utils.randomID(), round: currentRound, source: actorName, target: targetName,
                     type: rollType, name: actionName, result: resultText,
-                    detail: detailHtml, damageVal: 0, healVal: 0, tags: robustTags, minion: minionName,
-                    eventLinkId: eventLinkId 
+                    detail: detailHtml, damageVal: 0, healVal: 0, tags: robustTags, minion: minionName
                 };
                 stats.history.push(logEntry);
                 activeLedger.masterLog.push(logEntry);
+                
+                if (isCombatPhase) this.saveLiveBackup();
             }
-            if (isCombatPhase) this.saveLiveBackup();
         } catch (e) {}
     }
 };
@@ -744,20 +602,21 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 
                 const logId = target.dataset.logId;
                 
-                let targetLedger = this.currentLedgerData; 
-                if (!targetLedger) return ui.notifications.warn("Combat Forensics | UI Data desync. Please reopen the window.");
-
+                let targetLedger = this.selectedEncounter === "current" ? window.CombatParser.ledger :
+                                   this.selectedEncounter === "exploration" ? window.CombatParser.explorationLedger : null;
                 let dbName = null;
                 let encName = this.selectedEncounter;
 
-                if (encName !== "current" && encName !== "exploration") {
+                if (!targetLedger) {
                     const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
                     const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
                     const sDb = game.settings.get('pf2e-holodeck', 'holodeckHistory') || {};
-                    if (hDb[encName]) dbName = 'combatHistory';
-                    else if (eDb[encName]) dbName = 'explorationHistory';
-                    else if (sDb[encName]) dbName = 'holodeckHistory';
+                    if (hDb[encName]) { targetLedger = hDb[encName]; dbName = 'combatHistory'; }
+                    else if (eDb[encName]) { targetLedger = eDb[encName]; dbName = 'explorationHistory'; }
+                    else if (sDb[encName]) { targetLedger = sDb[encName]; dbName = 'holodeckHistory'; }
                 }
+
+                if (!targetLedger) return;
 
                 const logEntry = targetLedger.masterLog.find(l => l.id === logId);
                 if (!logEntry) return ui.notifications.warn("Combat Forensics | Log ID not found. Ensure databases are migrated.");
@@ -985,109 +844,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     default: "save"
                 }, { width: 500, classes: ["dialog", "combat-forensics-dialog"] }).render(true);
             },
-            deleteLog: async function(event, target) {
-                const requiredRole = game.settings.get('pf2e-holodeck', 'auditPermission') || 4;
-                if (game.user.role < requiredRole) return;
-                
-                const logId = target.dataset.logId;
-                
-                let targetLedger = this.currentLedgerData; 
-                if (!targetLedger) return ui.notifications.warn("Combat Forensics | UI Data desync. Please reopen the window.");
-
-                let dbName = null;
-                let encName = this.selectedEncounter;
-
-                if (encName !== "current" && encName !== "exploration") {
-                    const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
-                    const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
-                    const sDb = game.settings.get('pf2e-holodeck', 'holodeckHistory') || {};
-                    if (hDb[encName]) dbName = 'combatHistory';
-                    else if (eDb[encName]) dbName = 'explorationHistory';
-                    else if (sDb[encName]) dbName = 'holodeckHistory';
-                }
-
-                const logIndex = targetLedger.masterLog.findIndex(l => l.id === logId);
-                if (logIndex === -1) return ui.notifications.warn("Combat Forensics | Log ID not found.");
-                
-                const logEntry = targetLedger.masterLog[logIndex];
-                
-                const confirm = await Dialog.confirm({
-                    title: "Delete Combat Record",
-                    content: `<p>Are you sure you want to permanently delete <b>${logEntry.name}</b>?</p><p>This will scrub all associated stats from <b>${logEntry.source}</b>.</p>`,
-                    yes: () => true,
-                    no: () => false,
-                    defaultYes: false
-                });
-                
-                if (!confirm) return;
-
-                const stats = targetLedger.actors[logEntry.source];
-                
-                if (stats) {
-                    if (logEntry.type === "Damage" || logEntry.type === "Mitigation") {
-                        let dVal = logEntry.damageVal || 0;
-                        stats.damageDealt = Math.max(0, stats.damageDealt - dVal);
-                        targetLedger.totalDamage = Math.max(0, targetLedger.totalDamage - dVal);
-                        if (logEntry.result && logEntry.result.includes("💀")) {
-                            stats.kills = Math.max(0, stats.kills - 1); 
-                        }
-                    } 
-                    else if (logEntry.type === "Heal") {
-                        stats.healingDealt = Math.max(0, stats.healingDealt - (logEntry.healVal || 0));
-                    } 
-                    else if (logEntry.type === "Roll") {
-                        let poolMatch = logEntry.result ? logEntry.result.match(/Dice Pool:\s*(\d+)/) : null;
-                        if (poolMatch) {
-                            let rollTotal = parseInt(poolMatch[1]);
-                            stats.actualDamageRoll = Math.max(0, stats.actualDamageRoll - rollTotal);
-                        }
-                        if (logEntry.detail) {
-                            let typeMatches = [...logEntry.detail.matchAll(/(\d+)\s+([a-zA-Z]+)/g)];
-                            typeMatches.forEach(m => {
-                                let val = parseInt(m[1]);
-                                let dType = m[2].toLowerCase();
-                                if (stats.damageTypes && stats.damageTypes[dType]) {
-                                    stats.damageTypes[dType].total = Math.max(0, stats.damageTypes[dType].total - val);
-                                    stats.damageTypes[dType].instances = Math.max(0, stats.damageTypes[dType].instances - 1);
-                                }
-                            });
-                        }
-                    } 
-                    else if (logEntry.type === "Attack" || logEntry.type === "Save" || logEntry.type === "Skill") {
-                        let res = logEntry.result || "";
-                        if (res.includes("CRITICALSUCCESS") || res.includes("CRITICAL SUCCESS")) stats.crits = Math.max(0, stats.crits - 1);
-                        else if (res.includes("SUCCESS")) stats.hits = Math.max(0, stats.hits - 1);
-                        else if (res.includes("CRITICALFAILURE") || res.includes("CRITICAL FAILURE")) stats.critMisses = Math.max(0, stats.critMisses - 1);
-                        else if (res.includes("FAILURE")) stats.misses = Math.max(0, stats.misses - 1);
-
-                        let d20Match = logEntry.detail ? logEntry.detail.match(/d20:\s*(\d+)/) : null;
-                        if (d20Match) {
-                            let d20Val = parseInt(d20Match[1]);
-                            if (d20Val === 20) stats.nat20s = Math.max(0, stats.nat20s - 1);
-                            if (d20Val === 1) stats.nat1s = Math.max(0, stats.nat1s - 1);
-                            if (d20Val >= 1 && d20Val <= 20) {
-                                if (stats.d20Rolls && stats.d20Rolls[d20Val - 1] > 0) {
-                                    stats.d20Rolls[d20Val - 1]--;
-                                }
-                            }
-                        }
-                    }
-
-                    stats.history = stats.history.filter(h => h.id !== logId);
-                }
-
-                targetLedger.masterLog.splice(logIndex, 1);
-
-                if (dbName) {
-                    let db = game.settings.get('pf2e-holodeck', dbName);
-                    db[encName] = targetLedger;
-                    await game.settings.set('pf2e-holodeck', dbName, db);
-                }
-
-                this.expandedActors[logEntry.source] = true;
-                this.render({parts: ["main"]});
-                ui.notifications.info(`Combat Forensics | Deleted entry and updated stats for ${logEntry.source}.`);
-            },
             exportData: async function() {
                 if (!game.user.isGM) return ui.notifications.warn("Only the GM can archive to journals.");
                 const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
@@ -1101,9 +857,9 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     for (const [encounterName, data] of Object.entries(db)) {
                         htmlContent += `<h2>${encounterName}</h2><p><b>Total Damage:</b> ${data.totalDamage}</p>
                         <table border="1" cellpadding="5" cellspacing="0" style="width: 100%; border-collapse: collapse; font-size: 0.9em; text-align: left;">
-                        <thead style="background: rgba(0,0,0,0.1);"><tr><th>Combatant</th><th>DMG Dealt</th><th>Healing</th><th>Kills</th><th>Mitigated</th><th>Rolls</th></tr></thead><tbody>`;
+                        <thead style="background: rgba(0,0,0,0.1);"><tr><th>Combatant</th><th>DMG Dealt</th><th>Kills</th><th>Mitigated</th><th>Rolls</th></tr></thead><tbody>`;
                         
-                        const actors = Object.values(data.actors || {}).sort((a,b) => (b.damageDealt + (b.healingDealt||0)) - (a.damageDealt + (a.healingDealt||0)));
+                        const actors = Object.values(data.actors || {}).sort((a,b) => b.damageDealt - a.damageDealt);
                         for (const a of actors) {
                             const totalAttacks = (a.hits||0) + (a.misses||0) + (a.crits||0) + (a.critMisses||0);
                             const rawRolls = a.d20Rolls || Array(20).fill(0);
@@ -1111,7 +867,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                             const displayedRolls = Math.max(totalAttacks, totalD20s);
                             
                             htmlContent += `<tr><td><b>${a.name}</b></td><td style="color: #aa4444;">${a.damageDealt || 0}</td>
-                            <td style="color: #44ff44;">${a.healingDealt || 0}</td>
                             <td>${a.kills || 0}</td><td style="color: #aaaaaa;">${a.mitigated || 0}</td><td>${displayedRolls}</td></tr>`;
                         }
                         htmlContent += `</tbody></table><hr>`;
@@ -1485,7 +1240,8 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             let suspectReason = "";
             let targetData = activeLedger.actors[log.target];
             let hasValidTarget = log.target && log.target !== "None" && log.target !== "Unknown / AoE";
-            if (log.source !== "Environment" && targetData && log.target !== "None" && log.target !== "Unknown / AoE") {
+            
+            if (log.source !== "Environment" && targetData && hasValidTarget) {
                 let isTargetParty = targetData.isAlly;
                 if (log.type === "Damage") {
                     if (isParty === isTargetParty) {
@@ -1549,63 +1305,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
         let totalCombatTimeSeconds = 0;
         let pcTimeMap = {};
         let gmTimeTotal = 0;
-// === START FRONTEND VISUAL COLLAPSER ===
-const collapseLogs = (rawLogs) => {
-    let collapsed = [];
-    let openGroup = null;
 
-    rawLogs.forEach(log => {
-        let l = foundry.utils.deepClone(log);
-        
-        if (l.type === "Attack" || l.type === "Skill" || l.type === "Save" || l.type === "Roll") {
-            openGroup = l;
-            collapsed.push(openGroup);
-        } 
-        else if (l.type === "Damage" || l.type === "Heal" || l.type === "Mitigation") {
-            if (openGroup && openGroup.round === l.round && (openGroup.name === l.name || openGroup.name.includes(l.name) || l.name.includes(openGroup.name))) {
-                
-                openGroup.totalFoldedDmg = (openGroup.totalFoldedDmg || 0) + (l.damageVal || l.healVal || 0);
-                
-                openGroup.foldedTargets = openGroup.foldedTargets || [];
-                if (l.target && l.target !== "None" && !openGroup.foldedTargets.includes(l.target)) {
-                    openGroup.foldedTargets.push(l.target);
-                }
-                
-                let isDmg = l.type === "Damage";
-                let isHeal = l.type === "Heal";
-                let valColor = isDmg ? '#ff6666' : (isHeal ? '#44ff44' : '#aaaaaa');
-                let appText = isDmg ? `${l.damageVal} DMG` : (isHeal ? `${l.healVal} HEAL` : `MITIGATED`);
-                
-                let newDetailLine = `<div style="margin-top: 6px; padding-top: 6px; border-top: 1px dotted #555;">`;
-                newDetailLine += `<b>Applied to ${l.target}:</b> <span style="color:${valColor};">${appText}</span>`;
-                newDetailLine += `</div>`;
-                
-                openGroup.detail += newDetailLine;
-                
-            } else {
-                collapsed.push(l);
-            }
-        } else {
-            collapsed.push(l);
-        }
-    });
-
-    collapsed.forEach(l => {
-        if (l.totalFoldedDmg !== undefined) {
-            let isHeal = l.type === "Heal" || (l.result && l.result.includes("HEAL"));
-            let valColor = isHeal ? '#44ff44' : '#ff6666';
-            
-            l.result = `${l.result} <span style="color:#aaa; margin: 0 4px;">➔</span> <span style="color:${valColor}; font-weight:bold;">${l.totalFoldedDmg} APPLIED</span>`;
-            
-            if (l.foldedTargets && l.foldedTargets.length > 0) {
-                l.target = l.foldedTargets.join(", ");
-            }
-        }
-    });
-
-    return collapsed;
-};
-// === END FRONTEND VISUAL COLLAPSER ===
         Object.values(activeLedger.actors).forEach(a => {
             const rawRolls = a.d20Rolls || Array(20).fill(0);
             
@@ -1671,28 +1371,7 @@ const collapseLogs = (rawLogs) => {
             if (a.history) {
                 a.history.forEach(h => {
                     let aName = h.name || "Unknown";
-                    
-                    // --- START LEGACY CLEANUP ---
-                    aName = aName.split(/[-–—]*\s*Target:/i)[0];
-                    aName = aName.split(/\s+\|\s+/)[0];
-                    aName = aName.replace(/(?:Melee Strike|Ranged Strike|Strike|Damage Roll|Damage|Save|Skill Check|Spell|Cast|Hunted Shot Fused Damage|Fused Damage):\s*/ig, '').trim();
-                    // --- END LEGACY CLEANUP ---
-                    
-                    let validMinion = h.minion;
-                    
-                    // Scrub out specific orphaned enemies from Legacy logs
-                    if (validMinion === h.target || validMinion === "Animated Broom" || validMinion === "Vampire Servitor") {
-                        validMinion = null;
-                    }
-
-                    // Append the actual minion tag 
-                    if (validMinion) {
-                        aName = `${validMinion}: ${aName}`;
-                    }
-                    
-                    if (!abilityTotals[aName]) {
-                        abilityTotals[aName] = { name: aName, damage: 0, healing: 0, casts: 0, damageInstances: 0 };
-                    }
+                    if (!abilityTotals[aName]) abilityTotals[aName] = { name: aName, damage: 0, healing: 0, casts: 0, damageInstances: 0 };
                     
                     if (h.type === "Damage" || h.type === "Mitigation") {
                         let key = `${h.round}_${h.name}`;
@@ -1701,14 +1380,12 @@ const collapseLogs = (rawLogs) => {
                         abilityTotals[aName].damage += h.damageVal;
                         if (h.damageVal > 0) abilityTotals[aName].damageInstances += 1;
                     }
-                    
                     if (h.type === "Heal") {
                         let key = `${h.round}_${h.name}`;
                         if (!actionHealMap[key]) actionHealMap[key] = 0;
                         actionHealMap[key] += h.healVal;
                         abilityTotals[aName].healing += h.healVal;
                     }
-                    
                     if (h.type === "Roll" || h.type === "Attack" || h.type === "Save" || h.type === "Skill") {
                         abilityTotals[aName].casts += 1;
                     } else if (h.damageVal === 0 && h.healVal === 0) {
@@ -1718,16 +1395,12 @@ const collapseLogs = (rawLogs) => {
             }
             
             let abilityBreakdown = Object.values(abilityTotals)
-                // Hides empty / zero damage rows
-                .filter(ab => ab.damage > 0 || ab.healing > 0)
+                .filter(ab => ab.damage > 0 || ab.healing > 0 || ab.casts > 0)
                 .map(ab => {
                     return { 
                         ...ab, 
-                        detail: "", 
-                        result: "", 
-                        
                         dmgPct: a.damageDealt > 0 ? Math.round((ab.damage / a.damageDealt) * 100) : 0,
-                        hasBoth: ab.damage > 0 && ab.healing > 0 
+                        hasBoth: ab.damage > 0 && ab.healing > 0
                     };
                 })
                 .sort((x, y) => (y.damage + y.healing) - (x.damage + x.healing));
@@ -1780,19 +1453,11 @@ const collapseLogs = (rawLogs) => {
                 }
             }
 
-            let totalSpells = 0;
-            if (a.spellsCast) {
-                Object.values(a.spellsCast).forEach(spellList => totalSpells += spellList.length);
-            }
-
             const combatantData = { 
                 ...a, damagePercent, dpr, healingDealt: a.healingDealt || 0, accuracy, d20Graph, 
                 maxDamageDealt, maxDamageTaken, maxHealDealt, avgD20Display, totalChecks, successRate, totalTurnTimeStr, avgTurnTimeStr, maxTurnTimeStr, isAlly,
                 abilityBreakdown,
-                effectiveDamage: a.effectiveDamage || 0,
-                overkill: a.overkill || 0,
-                logs: collapseLogs(processedLogs.filter(l => !l.isDivider && !l.isTurnSummary && l.source === a.name)),
-                totalSpellsCast: totalSpells 
+                logs: processedLogs.filter(l => !l.isDivider && !l.isTurnSummary && l.source === a.name)
             };
             
             if (isAlly) pcs.push(combatantData);
@@ -1808,8 +1473,8 @@ const collapseLogs = (rawLogs) => {
             actorGroups.push({ 
                 name: a.name, 
                 isParty: a.isAlly, 
-                canViewActor: a.isAlly || isGM, 
-                logs: collapseLogs(aLogs),
+                canViewActor: a.isAlly || isGM || showAdvanced,
+                logs: aLogs,
                 totalTurnTimeStr: a.totalTurnTimeStr,
                 avgTurnTimeStr: a.avgTurnTimeStr,
                 maxTurnTimeStr: a.maxTurnTimeStr,
@@ -1955,9 +1620,6 @@ const collapseLogs = (rawLogs) => {
             xLabels.push({ x: x, round: i + 1 });
         }
 
-        // Cache the fully resolved UI data locally so action buttons can modify uncommitted generated IDs
-        this.currentLedgerData = activeLedger;
-
         return { 
             hasData: Object.keys(activeLedger.actors).length > 0,
             isGM, canAudit, showAdvanced, isExploration, isMeta, viewMode: this.viewMode,
@@ -1999,13 +1661,6 @@ Hooks.once('init', () => {
         type: Boolean,
         default: false
     });
-    game.settings.register('pf2e-holodeck', 'activeTactical', {
-        name: "Active Combat Backup",
-        scope: 'world',
-        config: false,
-        type: Object,
-        default: {}
-    });
     
     game.settings.register('pf2e-holodeck', 'auditPermission', {
         name: "Attribution Audit Role",
@@ -2032,7 +1687,7 @@ Hooks.once('init', () => {
 });
 
 Hooks.once('ready', () => {
-    window.CombatParser.restoreLiveBackup(); // ADD THIS LINE HERE
+    window.CombatParser.restoreLiveBackup();
     if (game.user.isGM) setInterval(() => { window.CombatParser.saveExplorationArchive(); }, 30 * 60 * 1000); 
 });
 
@@ -2057,7 +1712,7 @@ Hooks.on('createChatMessage', (message) => {
     const isSkillOrPerception = context.type === "skill-check" || context.type === "perception-check";
     const isDamageRoll = message.isDamageRoll || context.type === "damage-roll";
     const hasAppliedDamage = !!systemFlags.appliedDamage;
-    const isNarrative = /(?:takes|taking|unscathed|absorbing|healed|restored|reduced by|mitigated|kills them)/.test(fullText);
+    const isNarrative = /(?:takes|taking|unscathed|absorbing|healed|restored|reduced by|mitigated|kills them|healing)/.test(fullText);
 
     if (!isDamageTaken && !isAttackOrSave && !isSkillOrPerception && !isDamageRoll && !hasAppliedDamage && !isNarrative) return;
 
@@ -2075,7 +1730,10 @@ Hooks.on('updateCombat', (combat, changed) => {
     const activeLedger = window.CombatParser.ledger;
     if (combat.round > activeLedger.maxRounds) activeLedger.maxRounds = combat.round;
 
+    // ONLY touch the stopwatch if the turn, round, or combat state explicitly changes
     if (changed.turn !== undefined || changed.round !== undefined || changed.started === false) {
+        
+        // 1. Stop the clock for the outgoing combatant
         if (activeLedger.currentTurnStart && activeLedger.currentCombatant) {
             const duration = Math.round((Date.now() - activeLedger.currentTurnStart) / 1000);
             const cName = activeLedger.currentCombatant;
@@ -2086,26 +1744,27 @@ Hooks.on('updateCombat', (combat, changed) => {
                 });
             }
         }
-    }
 
-    if (combat.started && combat.combatant) {
-        activeLedger.currentTurnStart = Date.now();
-        const c = combat.combatant;
-        let rawName = c ? c.name : null;
-        let canonicalName = c ? window.CombatParser.getCanonicalName(c.actor, rawName) : null;
-        activeLedger.currentCombatant = canonicalName ? window.CombatParser.resolveOwner(canonicalName, c.actor) : null;
-        activeLedger.currentTurnRound = combat.round;
-    } else {
-        activeLedger.currentTurnStart = null;
-        activeLedger.currentCombatant = null;
-        activeLedger.currentTurnRound = null;
+        // 2. Start the clock for the incoming combatant
+        if (combat.started && combat.combatant && changed.started !== false) {
+            activeLedger.currentTurnStart = Date.now();
+            const c = combat.combatant;
+            let rawName = c ? c.name : null;
+            let canonicalName = c ? window.CombatParser.getCanonicalName(c.actor, rawName) : null;
+            activeLedger.currentCombatant = canonicalName ? window.CombatParser.resolveOwner(canonicalName, c.actor) : null;
+            activeLedger.currentTurnRound = combat.round;
+        } else {
+            activeLedger.currentTurnStart = null;
+            activeLedger.currentCombatant = null;
+            activeLedger.currentTurnRound = null;
+        }
     }
 
     if (window.combatForensicsInstance && window.combatForensicsInstance.rendered) {
         window.combatForensicsInstance.selectedEncounter = "current";
         window.combatForensicsInstance.render(true);
     }
-
+    
     window.CombatParser.saveLiveBackup();
 });
 
@@ -2175,11 +1834,4 @@ Hooks.on('renderCombatTracker', (app, html) => {
     });
     btnContainer.appendChild(btn);
     header.after(btnContainer);
-});
-
-Hooks.on('preUpdateActor', (actor, update) => {
-    if (update.system && update.system.attributes && update.system.attributes.hp && update.system.attributes.hp.value !== undefined) {
-        if (!window.CombatParser.hpCache) window.CombatParser.hpCache = {};
-        window.CombatParser.hpCache[actor.id] = actor.system.attributes.hp.value;
-    }
 });
