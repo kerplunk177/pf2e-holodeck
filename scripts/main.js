@@ -19,6 +19,7 @@ Hooks.once('init', () => {
         type: Object,
         default: {}
     });
+
     // Database 3: The Exploration & Roleplay Logs
     game.settings.register("pf2e-holodeck", "explorationHistory", {
         name: "Exploration Logs",
@@ -26,46 +27,6 @@ Hooks.once('init', () => {
         config: false,
         type: Object,
         default: {}
-    });
-    console.log("PF2e Holodeck | Powering up simulation grid...");
-    // Hotkey: Toggle Danger Room
-    game.keybindings.register("pf2e-holodeck", "toggleHolodeck", {
-        name: "Toggle Holodeck Control Panel",
-        hint: "Instantly open or close the Danger Room UI.",
-        editable: [{ key: "KeyH", modifiers: ["Alt"] }],
-        restricted: true, // Only you need to open the Holodeck
-        onDown: () => {
-            // Check if the window is already open in the DOM
-            if (document.querySelector('#pf2e-holodeck-hud')) {
-                // If you have a specific close function, call it here. Otherwise, Foundry usually handles V1 closure.
-                ui.notifications.warn("Holodeck UI is already open."); 
-            } else {
-                // Adjust this to whatever your specific class name is for the HUD
-                new HolodeckHUD().render(true); 
-            }
-            return true;
-        }
-        
-    });
-
-    // Hotkey: Toggle Combat Metrics
-    game.keybindings.register("pf2e-holodeck", "toggleParser", {
-        name: "Toggle Combat Metrics",
-        hint: "Instantly open or close the combat parser window.",
-        editable: [{ key: "KeyM", modifiers: ["Alt"] }],
-        restricted: false, 
-        onDown: () => {
-            if (!window.combatParserInstance) {
-                window.combatParserInstance = new window.CombatParserApp();
-            }
-
-            if (document.querySelector('#combat-parser-ui')) {
-                window.combatParserInstance.close();
-            } else {
-                window.combatParserInstance.render({force: true});
-            }
-            return true;
-        }
     });
 
     game.settings.register('pf2e-holodeck', 'matrixId', {
@@ -75,19 +36,49 @@ Hooks.once('init', () => {
         type: String,
         default: ''
     });
-    game.settings.register("pf2e-holodeck", "holodeckHistory", {
-        name: "Holodeck Simulation Logs",
-        scope: "world",
-        config: false,
-        type: Object,
-        default: {}
+
+    console.log("PF2e Holodeck | Powering up simulation grid...");
+
+    // Hotkey: Toggle Danger Room
+    game.keybindings.register("pf2e-holodeck", "toggleHolodeck", {
+        name: "Toggle Holodeck Control Panel",
+        hint: "Instantly open or close the Danger Room UI.",
+        editable: [{ key: "KeyH", modifiers: ["Alt"] }],
+        restricted: true, 
+        onDown: () => {
+            if (!holodeckApp) holodeckApp = new HolodeckHUD();
+            
+            if (document.querySelector('#holodeck-hud')) {
+                holodeckApp.close(); 
+            } else {
+                holodeckApp.render({ force: true }); 
+            }
+            return true;
+        }
     });
-    // Force Foundry to acknowledge and cache our HUD template
-    loadTemplates([
-        "modules/pf2e-holodeck/templates/hud.hbs",
-        "modules/pf2e-holodeck/templates/parser.hbs" 
-    ]);
+
+    // Hotkey: Toggle Combat Metrics
+    game.keybindings.register("pf2e-holodeck", "toggleParser", {
+        name: "Toggle Combat Metrics",
+        hint: "Instantly open or close the combat parser window.",
+        editable: [{ key: "KeyM", modifiers: ["Alt"] }],
+        restricted: false, 
+        onDown: () => {
+            if (!window.combatForensicsInstance) {
+                window.combatForensicsInstance = new window.CombatForensicsApp();
+            }
+
+            // Synced to the new V2 Window ID
+            if (document.querySelector('#combat-forensics-ui')) {
+                window.combatForensicsInstance.close();
+            } else {
+                window.combatForensicsInstance.render({force: true});
+            }
+            return true;
+        }
+    });
 });
+
 Hooks.on("getSceneControlButtons", (controls) => {
     if (!game.user.isGM) return;
 
@@ -103,7 +94,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
             if (holodeckApp.rendered) {
                 holodeckApp.bringToTop();
             } else {
-                holodeckApp.render(true);
+                holodeckApp.render({force: true});
             }
         }
     };
@@ -127,35 +118,28 @@ Hooks.on("getSceneControlButtons", (controls) => {
 
 
 Hooks.once('ready', async () => {
-    // We only want the GM running this logic
     if (!game.user.isGM) return;
 
     let matrixId = game.settings.get('pf2e-holodeck', 'matrixId');
     let matrix = game.journal.get(matrixId);
 
-    // If the database is missing or was accidentally deleted, rebuild it
     if (!matrix) {
         console.log("PF2e Holodeck | Constructing new Simulation Matrix...");
         
         matrix = await JournalEntry.create({
             name: "Holodeck Simulation Matrix (DO NOT DELETE)",
-            ownership: {
-                default: 0 
-            },
+            ownership: { default: 0 },
             flags: {
-                "pf2e-holodeck": {
-                    "simulations": {} 
-                }
+                "pf2e-holodeck": { "simulations": {} }
             }
         });
 
-        // Save the new ID
         await game.settings.set('pf2e-holodeck', 'matrixId', matrix.id);
     }
 
     console.log("PF2e Holodeck | Safety protocols engaged. Matrix online.");
-
 });
+
 const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
 
 class HolodeckHUD extends HandlebarsApplicationMixin(ApplicationV2) {
@@ -163,10 +147,7 @@ class HolodeckHUD extends HandlebarsApplicationMixin(ApplicationV2) {
     static DEFAULT_OPTIONS = {
         id: "holodeck-hud",
         classes: ["holodeck-window"],
-        position: {
-            width: 320,
-            height: "auto"
-        },
+        position: { width: 320, height: "auto" },
         window: {
             title: "Danger Room Controls",
             resizable: false,
@@ -175,24 +156,24 @@ class HolodeckHUD extends HandlebarsApplicationMixin(ApplicationV2) {
         actions: {
             toggleSim: async function() { 
                 await window.Holodeck.toggleSimulation(); 
-                this.render({parts: ["main"]}); 
+                this.render({ force: true });
             },
             createState: async function() {
                 const name = this.element.querySelector('#new-state-name').value;
                 if (name) { 
                     await window.Holodeck.saveState(name); 
-                    this.render({parts: ["main"]}); 
+                    this.render({ force: true });
                 }
             },
             saveState: async function() {
                 const selected = this.element.querySelector('#state-selector').value;
                 if (selected) { 
                     await window.Holodeck.saveState(selected); 
-                    this.render({parts: ["main"]}); 
+                    this.render({ force: true });
                 }
             },
             loadState: async function() {
-                await window.CombatParser.saveArchive();
+                if (window.CombatParser) await window.CombatParser.saveArchive();
                 const selected = this.element.querySelector('#state-selector').value;
                 if (selected) await window.Holodeck.loadState(selected);
             },
@@ -200,7 +181,7 @@ class HolodeckHUD extends HandlebarsApplicationMixin(ApplicationV2) {
                 const selected = this.element.querySelector('#state-selector').value;
                 if (selected) {
                     await window.Holodeck.deleteState(selected);
-                    this.render({parts: ["main"]}); 
+                    this.render({ force: true });
                 }
             },
             commitChanges: async function() {
@@ -210,16 +191,13 @@ class HolodeckHUD extends HandlebarsApplicationMixin(ApplicationV2) {
     };
 
     static PARTS = {
-        main: {
-            template: "modules/pf2e-holodeck/templates/hud.hbs"
-        }
+        main: { template: "modules/pf2e-holodeck/templates/hud.hbs" }
     };
 
     async _prepareContext(options) {
         const matrixId = game.settings.get('pf2e-holodeck', 'matrixId');
         const matrix = game.journal.get(matrixId);
         const states = matrix ? matrix.getFlag('pf2e-holodeck', 'simulations') || {} : {};
-        
         const isSimActive = canvas.scene ? canvas.scene.getFlag('pf2e-holodeck', 'active') : false;
 
         return {
@@ -228,6 +206,7 @@ class HolodeckHUD extends HandlebarsApplicationMixin(ApplicationV2) {
         };
     }
 }
+
 window.Holodeck = {
     toggleSimulation: async function() {
         if (!canvas.scene) {
@@ -241,17 +220,15 @@ window.Holodeck = {
             console.log("PF2e Holodeck | Initializing Simulation Protocol...");
             
             const backupPayloads = canvas.scene.tokens.map(t => t.toObject());
-            
             await canvas.scene.setFlag('pf2e-holodeck', 'pristineBackup', backupPayloads);
 
             await this.saveState("Simulation Start");
             await this.loadState("Simulation Start");
 
             await canvas.scene.setFlag('pf2e-holodeck', 'active', true);
-
             document.body.classList.add('holodeck-active');
 
-if (window.CombatParser) window.CombatParser.resetLedger();
+            if (window.CombatParser) window.CombatParser.resetLedger();
             ui.notifications.warn("Holodeck | Simulation Active. Sandbox mode engaged.");
 
         } else {
@@ -264,7 +241,8 @@ if (window.CombatParser) window.CombatParser.resetLedger();
 
             const backupPayloads = canvas.scene.getFlag('pf2e-holodeck', 'pristineBackup');
             if (backupPayloads) {
-                await canvas.scene.createEmbeddedDocuments("Token", backupPayloads);
+                // Defensive Context: Force Foundry to use the original campaign token IDs
+                await canvas.scene.createEmbeddedDocuments("Token", backupPayloads, { keepId: true });
             } else {
                 ui.notifications.error("Holodeck | Critical Error: Pristine backup missing!");
             }
@@ -272,14 +250,13 @@ if (window.CombatParser) window.CombatParser.resetLedger();
             await canvas.scene.unsetFlag('pf2e-holodeck', 'active');
             await canvas.scene.unsetFlag('pf2e-holodeck', 'pristineBackup');
             
-            // INJECTION 2: Turn off the red lights
             document.body.classList.remove('holodeck-active');
-            
             ui.notifications.info("Holodeck | Simulation Terminated. Reality restored.");
-
-           if (window.CombatParserApp) {
-            new window.CombatParserApp().render({ force: true });
         }
+        
+        // Push the update to the UI if it is currently open
+        if (window.combatForensicsInstance && window.combatForensicsInstance.rendered) {
+            window.combatForensicsInstance.render({ force: true });
         }
     },
 
@@ -288,15 +265,14 @@ if (window.CombatParser) window.CombatParser.resetLedger();
         if (!stateName || stateName.trim() === "") return;
 
         console.log(`PF2e Holodeck | Serializing reality to state: ${stateName}...`);
-        
         const payloads = [];
 
         for (let token of canvas.scene.tokens) {
             let tokenData = token.toObject();
-
             if (tokenData.actorLink) {
                 tokenData.actorLink = false;
-                setProperty(tokenData, "flags.pf2e-holodeck.isProtected", true);
+                // V14 Fix: Added foundry.utils prefix
+                foundry.utils.setProperty(tokenData, "flags.pf2e-holodeck.isProtected", true);
             }
             payloads.push(tokenData);
         }
@@ -339,9 +315,12 @@ if (window.CombatParser) window.CombatParser.resetLedger();
             await canvas.scene.deleteEmbeddedDocuments("Token", currentTokenIds);
         }
 
-        await canvas.scene.createEmbeddedDocuments("Token", payload);
+        // Defensive Context: Keep original IDs so history tracking doesn't break
+        await canvas.scene.createEmbeddedDocuments("Token", payload, { keepId: true });
+        
         ui.notifications.info(`Holodeck | Reality overwritten. State '${stateName}' is now active.`);
     },
+
     deleteState: async function(stateName) {
         if (!stateName) return;
 
@@ -361,9 +340,7 @@ if (window.CombatParser) window.CombatParser.resetLedger();
         }
 
         console.log(`PF2e Holodeck | Purging timeline: ${stateName}...`);
-
         await matrix.setFlag('pf2e-holodeck', `simulations.-=${stateName}`, null);
-        
         ui.notifications.info(`Holodeck | Timeline '${stateName}' has been erased.`);
     },
 
@@ -382,12 +359,10 @@ if (window.CombatParser) window.CombatParser.resetLedger();
         let commitCount = 0;
 
         for (let token of canvas.scene.tokens) {
-
             let tokenData = token.toObject();
+            // V14 Fix: Added foundry.utils prefix
+            if (foundry.utils.getProperty(tokenData, "flags.pf2e-holodeck.isProtected")) continue;
 
-            if (getProperty(tokenData, "flags.pf2e-holodeck.isProtected")) continue;
-
- 
             const baseActor = game.actors.get(token.actorId);
             if (!baseActor) continue; 
 
@@ -400,7 +375,8 @@ if (window.CombatParser) window.CombatParser.resetLedger();
 
             for (let [stateName, payloadArray] of Object.entries(currentStates)) {
                 for (let savedToken of payloadArray) {
-                    if (savedToken.actorId === baseActor.id && !getProperty(savedToken, "flags.pf2e-holodeck.isProtected")) {
+                    // V14 Fix: Added foundry.utils prefix
+                    if (savedToken.actorId === baseActor.id && !foundry.utils.getProperty(savedToken, "flags.pf2e-holodeck.isProtected")) {
                         savedToken.actorData = savedToken.actorData || {};
                         savedToken.actorData.system = syntheticActorData.system;
                         savedToken.actorData.items = syntheticActorData.items;
@@ -417,8 +393,8 @@ if (window.CombatParser) window.CombatParser.resetLedger();
 
         ui.notifications.info(`Holodeck | Success. Synchronized ${commitCount} NPCs to the master database.`);
     }
-    
 };
+
 Hooks.on('canvasReady', () => {
     if (!game.user.isGM) return;
     

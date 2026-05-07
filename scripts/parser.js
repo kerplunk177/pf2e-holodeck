@@ -1,25 +1,37 @@
+// --- V14 STRICT DATA MODELS ---
+class CombatLedgerData extends foundry.abstract.DataModel {
+    static defineSchema() {
+        const fields = foundry.data.fields;
+        return {
+            actors: new fields.ObjectField({ initial: {} }),
+            masterLog: new fields.ArrayField(new fields.ObjectField(), { initial: [] }),
+            totalDamage: new fields.NumberField({ initial: 0, integer: true }),
+            startTime: new fields.NumberField({ nullable: true, initial: null }),
+            maxRounds: new fields.NumberField({ initial: 1, integer: true }),
+            currentTurnStart: new fields.NumberField({ nullable: true, initial: null }),
+            currentCombatant: new fields.StringField({ nullable: true, initial: null }),
+            currentTurnRound: new fields.NumberField({ nullable: true, initial: null })
+        };
+    }
+}
+window.CombatLedgerData = CombatLedgerData;
+
 window.CombatParser = {
     ledger: { actors: {}, masterLog: [], totalDamage: 0, startTime: null, maxRounds: 1, currentTurnStart: null, currentCombatant: null, currentTurnRound: null },
     explorationLedger: { actors: {}, masterLog: [], totalDamage: 0, startTime: null, maxRounds: 1 },
 
     getCanonicalName: function(actorDoc, alias) {
         if (!actorDoc) return alias || "Unknown";
-        if (actorDoc.type === "character" || actorDoc.type === "familiar" || actorDoc.hasPlayerOwner) {
-            return actorDoc.name;
-        }
+        if (actorDoc.type === "character" || actorDoc.type === "familiar" || actorDoc.hasPlayerOwner) return actorDoc.name;
         return alias || actorDoc.name;
     },
 
-    resolveOwner: function(actorName, actorDoc, tokenAlias) {
-        if (!actorName) return "Unknown";
+    getMasterName: function(actorDoc, tokenAlias) {
         if (actorDoc && actorDoc.flags?.pf2e?.master?.id) {
             let master = game.actors.get(actorDoc.flags.pf2e.master.id);
             if (master) return master.name;
         }
-        
-        let checkName = actorName;
-        if (tokenAlias && tokenAlias.match(/^(.+?)'s /i)) checkName = tokenAlias;
-
+        let checkName = tokenAlias || (actorDoc ? actorDoc.name : "");
         let match = checkName.match(/^(.+?)'s /i);
         if (match) {
             let possibleName = match[1].toLowerCase();
@@ -30,7 +42,6 @@ window.CombatParser = {
             );
             if (masterActor) return masterActor.name;
         }
-
         if (actorDoc) {
             let traits = actorDoc.system?.traits?.value || [];
             let isMinion = traits.includes("minion") || traits.includes("eidolon") || actorDoc.type === "familiar";
@@ -41,6 +52,20 @@ window.CombatParser = {
                 }
             }
         }
+        return null;
+    },
+
+    resolveOwner: function(actorName, actorDoc, tokenAlias) {
+        if (!actorName) return "Unknown";
+        let masterName = this.getMasterName(actorDoc, tokenAlias);
+        let checkName = tokenAlias || actorName;
+        
+        if (masterName && checkName.toLowerCase().startsWith(masterName.toLowerCase() + "'s ")) {
+            return checkName.substring(masterName.length + 3).trim();
+        }
+        let match = checkName.match(/^.+?'s (.+)/i);
+        if (match) return match[1].trim(); 
+        
         return actorName;
     },
 
@@ -72,6 +97,7 @@ window.CombatParser = {
             
             let rawName = window.CombatParser.getCanonicalName(actorDoc, c.name);
             let actorName = window.CombatParser.resolveOwner(rawName, actorDoc, c.name);
+            let masterName = window.CombatParser.getMasterName(actorDoc, c.name);
             let actorType = actorDoc.type;
             let actorLevel = parseInt(actorDoc.system?.details?.level?.value) || 0;
             let allyStatus = checkIsAlly(actorDoc);
@@ -79,9 +105,12 @@ window.CombatParser = {
             if (!activeLedger.actors[actorName]) {
                 activeLedger.actors[actorName] = {
                     name: actorName, type: actorType, level: actorLevel, isAlly: allyStatus,
+                    master: masterName,
                     damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
-                    nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, 
-                    expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
+                    damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
+                    incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
+                    advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {} },
+                    expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [], nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0
                 };
             } else {
                 if (allyStatus) activeLedger.actors[actorName].isAlly = true;
@@ -122,7 +151,7 @@ window.CombatParser = {
     restoreLiveBackup: function() {
         let saved = game.settings.get('pf2e-holodeck', 'activeTactical');
         if (saved && saved.actors && Object.keys(saved.actors).length > 0 && game.combat && game.combat.active) {
-            this.ledger = saved;
+            this.ledger = foundry.utils.deepClone(saved.toObject ? saved.toObject() : saved);
             console.log("Combat Forensics | Restored mid-session combat from backup.");
         }
     },
@@ -132,15 +161,18 @@ window.CombatParser = {
             const systemFlags = message.flags?.pf2e || message.flags?.sf2e || {};
             const context = systemFlags.context || {};
             const fullText = `${message.flavor || ""} ${message.content || ""}`.replace(/<[^>]*>?/gm, ' ').trim();
+            const lowerFull = fullText.toLowerCase();
 
             const isCombatPhase = (canvas.scene && canvas.scene.getFlag('pf2e-holodeck', 'active')) || (game.combat && game.combat.active);
             const activeLedger = isCombatPhase ? this.ledger : this.explorationLedger;
 
-            const hasAppliedDamage = !!systemFlags.appliedDamage;
-            const isNarrativeDamage = /(?:unscathed|absorbing|takes \d+ damage|healed \d+|restored \d+|\d+ healing|reduced by|mitigated)/i.test(fullText);
-            const isApplication = !message.isDamageRoll && context.type !== "damage-roll" && (context.type === "damage-taken" || hasAppliedDamage || isNarrativeDamage);
-            const isDamageRoll = message.isDamageRoll || context.type === "damage-roll";
-            
+            let msgActor = message.actor || (message.speaker?.actor ? game.actors.get(message.speaker.actor) : null);
+            let alias = message.speaker?.alias || message.alias;
+            let rawActorName = this.getCanonicalName(msgActor, alias);
+            let resolvedOwner = this.resolveOwner(rawActorName, msgActor, alias);
+            let ownerMaster = this.getMasterName(msgActor, alias);
+
+            const getActorLevel = (actorDoc) => parseInt(actorDoc?.system?.details?.level?.value) || 0;
             const checkIsAlly = (actDoc) => {
                 if (!actDoc) return false;
                 if (actDoc.type === "character" || actDoc.type === "familiar") return true;
@@ -149,21 +181,56 @@ window.CombatParser = {
                 return false;
             };
 
-            let msgActor = message.actor || (message.speaker?.actor ? game.actors.get(message.speaker.actor) : null);
-            let alias = message.speaker?.alias || message.alias;
-            let rawActorName = window.CombatParser.getCanonicalName(msgActor, alias);
-            let resolvedOwner = window.CombatParser.resolveOwner(rawActorName, msgActor, alias);
-            
+            if (resolvedOwner && !activeLedger.actors[resolvedOwner]) {
+                activeLedger.actors[resolvedOwner] = {
+                    name: resolvedOwner, type: msgActor ? msgActor.type : "npc", level: getActorLevel(msgActor), isAlly: checkIsAlly(msgActor),
+                    master: ownerMaster,
+                    damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0,
+                    damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
+                    incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
+                    advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {} },
+                    nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: []
+                };
+            }
+            let stats = activeLedger.actors[resolvedOwner];
+
+            if (stats) {
+                if (lowerFull.includes("hunted shot fused damage") || lowerFull.includes("hunted shot: fused damage")) stats.advanced.huntedShots++;
+                if (lowerFull.includes("guardian's taunt")) stats.advanced.taunts++;
+                if (lowerFull.includes("wellspring surge")) stats.advanced.surges++;
+            }
+            if (lowerFull.includes("taunt penalty triggered!")) {
+                let guardian = Object.values(activeLedger.actors).find(a => a.isAlly && a.advanced && a.advanced.taunts > 0);
+                if (guardian) guardian.advanced.tauntTriggers++;
+            }
+
+            const isDamageTaken = context.type === "damage-taken" || lowerFull.includes("damage taken");
+            const isAttack = context.type === "attack-roll" || context.type === "spell-attack-roll";
+            const isSave = context.type === "saving-throw";
+            const isSkill = context.type === "skill-check" || context.type === "perception-check";
+            const isDamageRoll = message.isDamageRoll || context.type === "damage-roll";
+            const hasAppliedDamage = !!systemFlags.appliedDamage;
+            const hasAoEPayload = message.flags?.["aoe-easy-resolve"]?.damageTotal !== undefined;
+
+       
+            const isBaseCard = context.type === "spell-cast" || context.type === "action" || context.type === "spell-effect";
+            if (isBaseCard && !hasAoEPayload) return;
+
+            const isNarrative = /(?:takes|taking|applied|healed|restored|reduced by|mitigated|recovered)[^\d]*\d+/i.test(fullText) || /(?:unscathed|completely absorbing)/i.test(fullText);
+
+            let isSynergyTextOnly = false;
+            if (!isDamageTaken && !isAttack && !isSave && !isSkill && !isDamageRoll && !hasAppliedDamage && !isNarrative && !hasAoEPayload) {
+                if (lowerFull.includes("guardian's taunt") || lowerFull.includes("taunt penalty triggered!") || lowerFull.includes("wellspring surge")) {
+                    isSynergyTextOnly = true;
+                } else return; 
+            }
+
             let minionName = null;
             let checkNameForTag = (rawActorName !== resolvedOwner) ? rawActorName : (alias !== resolvedOwner ? alias : null);
-            
             if (checkNameForTag) {
                 let match = checkNameForTag.match(/^.+?'s (.+)/i);
-                if (match) {
-                    minionName = match[1].trim();
-                } else {
-                    minionName = checkNameForTag.trim();
-                }
+                if (match) minionName = match[1].trim();
+                else minionName = checkNameForTag.trim();
             } else if (msgActor && msgActor.name !== resolvedOwner) {
                 minionName = msgActor.name.trim();
             }
@@ -177,135 +244,131 @@ window.CombatParser = {
                 actionName = message.item ? message.item.name : "Unknown Action";
             }
 
-            const getActorLevel = (actorDoc) => {
-                if (!actorDoc) return 0;
-                return parseInt(actorDoc.system?.details?.level?.value) || 0;
-            };
+            if (isSynergyTextOnly) return;
 
-            if (isApplication || (context.type === "damage-roll" && message.flags["aoe-easy-resolve"])) {
+            // --- DAMAGE APPLICATION PHASE ---
+            const isApplication = !isDamageRoll && !isAttack && !isSave && !isSkill && (isDamageTaken || hasAppliedDamage || isNarrative || hasAoEPayload);
+
+            if (isApplication) {
                 const applied = systemFlags.appliedDamage;
                 
-                // --- AOE EASY RESOLVE INTERCEPTOR ---
-                let aoeHealValue = 0;
-                if (message.flags["aoe-easy-resolve"]?.damageTotal !== undefined) {
-                     const isAoEHealing = /(?:healed|restored|Healing)/i.test(message.flags["aoe-easy-resolve"].damageTooltip || fullText);
-                     if (isAoEHealing) aoeHealValue = parseInt(message.flags["aoe-easy-resolve"].damageTotal);
+                let aoeValue = null;
+                let isAoEHealing = false;
+                if (hasAoEPayload) {
+                     isAoEHealing = /(?:healed|restored|healing|recovered)/i.test(message.flags["aoe-easy-resolve"].damageTooltip || fullText);
+                     aoeValue = parseInt(message.flags["aoe-easy-resolve"].damageTotal);
                 }
                 
-                const isHealing = applied ? applied.isHealing === true : (aoeHealValue > 0 || /(?:healed|restored|healing)/i.test(fullText));
-                // ------------------------------------
+                const isHealing = applied ? applied.isHealing === true : (isAoEHealing || /(?:healed|restored|healing|recovered)/i.test(fullText));
 
                 let attackerName = "Unknown Source";
                 let attackerType = "npc";
                 let attackerLevel = 0;
+                let attackerDoc = null; 
+                let actionNameResolved = actionName;
                 let targetName = "None";
                 let targetLevel = 0;
-                let attackerDoc = null;
                 let targetDoc = null;
                 let inheritedMinion = minionName;
 
-                if (context.target?.token && canvas.scene) {
-                    const t = canvas.scene.tokens.get(context.target.token);
-                    if (t) { targetName = t.name; targetDoc = t.actor; }
-                } else if (systemFlags.appliedDamage?.uuid) {
+                if (context.target?.token) {
+                    let tDoc = fromUuidSync(context.target.token);
+                    if (tDoc) { targetName = tDoc.name || tDoc.parent?.name || "None"; targetDoc = tDoc.actor || tDoc; }
+                } 
+                if (targetName === "None" && systemFlags.appliedDamage?.uuid) {
                     targetDoc = fromUuidSync(systemFlags.appliedDamage.uuid);
                     if (targetDoc) targetName = targetDoc.parent?.name || targetDoc.name;
-                } else if (message.speaker?.alias) {
+                } 
+                if (targetName === "None" && message.speaker?.alias) {
                     targetName = message.speaker.alias;
                     targetDoc = message.actor;
-                } else if (message.actor) {
-                    targetName = message.actor.name;
-                    targetDoc = message.actor;
                 }
+
+                let tRawName = targetName;
                 if (targetDoc) {
-                    let tRawName = window.CombatParser.getCanonicalName(targetDoc, targetName);
+                    tRawName = window.CombatParser.getCanonicalName(targetDoc, targetName);
                     targetName = window.CombatParser.resolveOwner(tRawName, targetDoc, targetName);
                     targetLevel = getActorLevel(targetDoc);
                 }
+                let actualTargetMinion = (tRawName !== targetName) ? tRawName.replace(/^.+?'s /i, '').trim() : null;
 
-                let turnBoundaryCrossed = false;
-
-                for (let i = activeLedger.masterLog.length - 1; i >= 0; i--) {
-                    let prev = activeLedger.masterLog[i];
-                    if (prev.isTurnSummary) turnBoundaryCrossed = true;
-
-                    if (prev.type === "Roll" || prev.type === "Attack" || prev.type === "Save" || prev.type === "Skill") {
-                        let liveAct = game.actors.find(a => a.name === prev.source);
-                        let isTargetAlly = targetDoc ? checkIsAlly(targetDoc) : false;
-                        let isPrevSourceAlly = liveAct ? checkIsAlly(liveAct) : false;
-
-                        let isCrossAllianceHealing = isHealing && (isTargetAlly !== isPrevSourceAlly);
-                        let isDifferentTarget = prev.target !== "Unknown / AoE" && prev.target !== "None" && targetName !== "None" && prev.target !== targetName;
-                        let isPrevPersistent = prev.name && prev.name.toLowerCase().includes("persistent damage");
-
-                        let forceIntercept = false;
-                        let interceptName = "Persistent Condition";
-
-                        if (isHealing && (isCrossAllianceHealing || isPrevPersistent)) {
-                            forceIntercept = true;
-                            interceptName = "Fast Healing / Regen";
-                        } else if (isDifferentTarget || (turnBoundaryCrossed && isPrevPersistent)) {
-                            forceIntercept = true;
-                            interceptName = "Persistent Condition";
-                        }
-
-                        if (forceIntercept) {
-                            attackerName = targetName !== "None" ? targetName : "Environment";
-                            actionName = interceptName;
-                            attackerType = targetDoc ? targetDoc.type : "npc";
-                            attackerLevel = targetLevel;
-                            attackerDoc = targetDoc;
-                        } else {
-                            attackerName = prev.source;
-                            if (prev.name && prev.name !== "Unknown Action") actionName = prev.name; 
-                            if (prev.minion) inheritedMinion = prev.minion;
-                            if (prev.target !== "Unknown / AoE" && prev.target !== "None") targetName = prev.target;
-                            if (liveAct) {
-                                attackerType = liveAct.type;
-                                attackerLevel = getActorLevel(liveAct);
-                                attackerDoc = liveAct;
+                let hasSolidOrigin = false;
+                let originUuid = systemFlags.origin?.uuid || message.flags["aoe-easy-resolve"]?.origin;
+                if (originUuid) {
+                    let originDoc = fromUuidSync(originUuid);
+                    if (originDoc) {
+                        let actualActor = originDoc.actor || originDoc.parent || originDoc;
+                        if (actualActor && actualActor.name) {
+                            let tAlias = actualActor.name;
+                            let rawName = window.CombatParser.getCanonicalName(actualActor, tAlias);
+                            attackerName = window.CombatParser.resolveOwner(rawName, actualActor, tAlias);
+                            attackerType = actualActor.type || "npc";
+                            attackerLevel = getActorLevel(actualActor);
+                            if (originDoc.type === "spell" || originDoc.type === "feat" || originDoc.type === "weapon" || originDoc.type === "action") {
+                                actionNameResolved = originDoc.name;
                             }
+                            hasSolidOrigin = true;
                         }
-                        break;
                     }
                 }
 
-                if (attackerName === "Unknown Source" && systemFlags.origin?.actor) {
-                    const tempAttackerDoc = fromUuidSync(systemFlags.origin.actor);
-                    if (tempAttackerDoc) {
-                        const actualActor = tempAttackerDoc.actor || tempAttackerDoc; 
-                        let tAlias = actualActor.name;
-                        let rawName = window.CombatParser.getCanonicalName(actualActor, tAlias);
-                        attackerName = window.CombatParser.resolveOwner(rawName, actualActor, tAlias);
-                        attackerType = actualActor.type;
-                        attackerLevel = getActorLevel(actualActor);
-                        attackerDoc = actualActor;
+               
+                if (!hasSolidOrigin && (attackerName === "Unknown Source" || attackerName === targetName)) {
+                    for (let i = activeLedger.masterLog.length - 1; i >= 0; i--) {
+                        let prev = activeLedger.masterLog[i];
+                        if (prev.type === "Roll" || prev.type === "Attack" || prev.type === "Spell") {
+                            attackerName = prev.source;
+                            if (prev.name && prev.name !== "Unknown Action") actionNameResolved = prev.name;
+                            if (prev.minion) inheritedMinion = prev.minion;
+                            attackerDoc = game.actors.find(a => a.name === attackerName);
+                            break;
+                        }
                     }
                 }
 
                 let valueTotal = 0;
-                if (aoeHealValue > 0) {
-                     valueTotal = aoeHealValue;
+                if (aoeValue !== null) {
+                     valueTotal = aoeValue;
+                } else if (applied && applied.damage !== undefined) {
+                     valueTotal = parseInt(applied.damage);
+                } else if (applied && applied.amount !== undefined) {
+                     valueTotal = parseInt(applied.amount);
                 } else {
-                    const textMatch = fullText.match(/(?:damaged for|healed|takes|restored|healing).*?(\d+)/i) || fullText.match(/(\d+)\s*(?:HP|Damage|DMG|Heal|Healing)/i);
+                  
+                    const textMatch = fullText.match(/(?:damaged for|healed|takes|restored|healing|applied|recovered).*?(\d+)/i) || fullText.match(/(\d+)\s*(?:HP|Damage|DMG|Heal|Healing|applied)/i);
                     if (textMatch) valueTotal = parseInt(textMatch[1]);
                     else {
                         const allNums = fullText.match(/(\d+)/g);
                         if (allNums && allNums.length > 0) valueTotal = parseInt(allNums[allNums.length - 1]);
                     }
                 }
-
+                
                 if (/(?:unscathed|completely absorbing)/i.test(fullText)) valueTotal = 0;
+                if (valueTotal === 0 && !/(?:unscathed|completely absorbing)/i.test(fullText)) return;
+
+                // --- BULLETPROOF ATTACKER CREATION ---
+                let aMaster = this.getMasterName(attackerDoc, attackerName);
+                let aAlly = attackerName === resolvedOwner ? stats?.isAlly : false;
+                if (aMaster && !aAlly) {
+                    let mDoc = game.actors.find(a => a.name === aMaster);
+                    if (mDoc && (mDoc.type === "character" || mDoc.hasPlayerOwner)) aAlly = true;
+                }
 
                 if (!activeLedger.actors[attackerName]) {
                     activeLedger.actors[attackerName] = {
-                        name: attackerName, type: attackerType, level: attackerLevel, isAlly: checkIsAlly(attackerDoc),
+                        name: attackerName, type: attackerType, level: attackerLevel, isAlly: aAlly,
+                        master: aMaster,
                         damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
+                        damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
+                        incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
+                        advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {} },
                         nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
                     };
                 }
+                let aStats = activeLedger.actors[attackerName];
+                if (aMaster && !aStats.master) aStats.master = aMaster;
+                if (aAlly && !aStats.isAlly) aStats.isAlly = true;
 
-                let stats = activeLedger.actors[attackerName];
                 let currentRound = game.combat ? game.combat.round : 1;
                 if (currentRound > activeLedger.maxRounds) activeLedger.maxRounds = currentRound;
 
@@ -314,15 +377,61 @@ window.CombatParser = {
                 let mitMatch;
                 while ((mitMatch = mitRegex.exec(fullText)) !== null) mitigatedTotal += parseInt(mitMatch[1]);
 
-                if (mitigatedTotal > 0 && !isHealing && targetName !== "None") {
+                // --- BULLETPROOF TARGET CREATION ---
+                if (targetName !== "None") {
+                    let targetMaster = this.getMasterName(targetDoc, targetName); 
+                    let tAlly = targetDoc ? checkIsAlly(targetDoc) : false;
+                    if (targetMaster && !tAlly) {
+                        let mDoc = game.actors.find(a => a.name === targetMaster);
+                        if (mDoc && (mDoc.type === "character" || mDoc.hasPlayerOwner)) tAlly = true;
+                    }
+
                     if (!activeLedger.actors[targetName]) {
                         activeLedger.actors[targetName] = {
-                            name: targetName, type: "npc", level: targetLevel, isAlly: checkIsAlly(targetDoc),
+                            name: targetName, type: targetDoc ? targetDoc.type : "npc", level: targetLevel, isAlly: tAlly,
+                            master: targetMaster,
                             damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
+                            damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
+                            incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
+                            advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {} },
                             nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
                         };
                     }
-                    activeLedger.actors[targetName].mitigated += mitigatedTotal;
+                    let tStats = activeLedger.actors[targetName];
+                    if (targetMaster && !tStats.master) tStats.master = targetMaster;
+                    if (tAlly && !tStats.isAlly) tStats.isAlly = true;
+
+                    if (mitigatedTotal > 0 && !isHealing) {
+                        tStats.mitigated += mitigatedTotal;
+                        if (!tStats.mitigatedSources) tStats.mitigatedSources = {};
+                        tStats.mitigatedSources[attackerName] = (tStats.mitigatedSources[attackerName] || 0) + mitigatedTotal;
+                    }
+                    
+                    let cleanAction = actionNameResolved.split(/(?: - | \| )/)[0].trim().replace(/\s*\([^)]*$/, "").replace(/^(?:Damage Roll:\s*|Roll:\s*)/i, "").trim();
+                    let displayAction = actualTargetMinion ? `[Hit: ${actualTargetMinion}] ${cleanAction}` : cleanAction;
+
+                    if (valueTotal > 0 && !isHealing) {
+                        let typeFound = false;
+                        if (message.rolls) {
+                            message.rolls.forEach(r => {
+                                if (r.instances) {
+                                    r.instances.forEach(i => {
+                                        let dt = i.type || "untyped";
+                                        tStats.damageTakenTypes[dt] = (tStats.damageTakenTypes[dt] || 0) + i.total;
+                                        typeFound = true;
+                                    });
+                                }
+                            });
+                        } 
+                        if (!typeFound) tStats.damageTakenTypes["applied"] = (tStats.damageTakenTypes["applied"] || 0) + valueTotal;
+
+                        if (!tStats.damageTakenSources[attackerName]) tStats.damageTakenSources[attackerName] = {};
+                        tStats.damageTakenSources[attackerName][displayAction] = (tStats.damageTakenSources[attackerName][displayAction] || 0) + valueTotal;
+                    }
+                    else if (valueTotal > 0 && isHealing) {
+                        if (!tStats.healingReceivedSources[attackerName]) tStats.healingReceivedSources[attackerName] = {};
+                        tStats.healingReceivedSources[attackerName][displayAction] = (tStats.healingReceivedSources[attackerName][displayAction] || 0) + valueTotal;
+                    }
                 }
 
                 if (valueTotal === 0 && mitigatedTotal === 0) return; 
@@ -334,21 +443,31 @@ window.CombatParser = {
                 if (/(?:unconscious|dying|dead|destroyed|kill)/i.test(fullText)) isKill = true;
 
                 if (isHealing) {
-                    stats.healingDealt += valueTotal;
-                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: "Heal", name: actionName, result: `${valueTotal} HEALED`, detail: `Actual HP restored via healing.`, damageVal: 0, healVal: valueTotal, minion: inheritedMinion };
-                    stats.history.push(logEntry);
+                    aStats.healingDealt += valueTotal;
+                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: "Heal", name: actionNameResolved, result: `${valueTotal} HEALED`, detail: `Actual HP restored via healing.`, damageVal: 0, healVal: valueTotal, minion: inheritedMinion };
+                    aStats.history.push(logEntry);
                     activeLedger.masterLog.push(logEntry);
                 } else {
-                    stats.damageDealt += valueTotal;
-                    if (isKill) stats.kills++;
+                    aStats.damageDealt += valueTotal;
+                    if (isKill) aStats.kills++;
                     activeLedger.totalDamage += valueTotal;
+
+                    if (lowerFull.includes("hunted shot fused damage") || lowerFull.includes("hunted shot: fused damage")) {
+                        aStats.advanced.huntedShotDmg += valueTotal;
+                    }
+                    if (lowerFull.includes("wellspring surge")) {
+                        let isTargetAlly = activeLedger.actors[targetName]?.isAlly;
+                        if (aStats.isAlly && isTargetAlly) {
+                            aStats.advanced.surgeFriendlyDmg += valueTotal;
+                        }
+                    }
                     
                     let resultText = valueTotal === 0 ? `FULLY MITIGATED` : `${valueTotal} DMG APPLIED`;
                     if (isKill) resultText += " 💀";
                     if (mitigatedTotal > 0) resultText += ` <span style="color:#aaa;">(${mitigatedTotal} BLKD)</span>`;
                     
-                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: valueTotal === 0 ? "Mitigation" : "Damage", name: actionName, result: resultText, detail: `Actual HP removed after saves, weaknesses, and resistances.`, damageVal: valueTotal, healVal: 0, minion: inheritedMinion };
-                    stats.history.push(logEntry);
+                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: valueTotal === 0 ? "Mitigation" : "Damage", name: actionNameResolved, result: resultText, detail: `Actual HP removed after saves, weaknesses, and resistances.`, damageVal: valueTotal, healVal: 0, minion: inheritedMinion };
+                    aStats.history.push(logEntry);
                     activeLedger.masterLog.push(logEntry);
                 }
                 
@@ -356,19 +475,12 @@ window.CombatParser = {
                 return; 
             }
 
-            if (isDamageRoll && message.rolls) {
+            // --- ROLL PHASE ---
+            if (isDamageRoll && message.rolls && !isAttack && !isSave && !isSkill) {
                 const rollTotal = message.rolls.reduce((sum, roll) => sum + roll.total, 0);
                 let damageDetails = [];
                 let expectedTotal = 0;
                 const actorName = resolvedOwner;
-                
-                if (!activeLedger.actors[actorName]) {
-                    activeLedger.actors[actorName] = {
-                        name: actorName, type: msgActor ? msgActor.type : "npc", level: getActorLevel(msgActor), isAlly: checkIsAlly(msgActor),
-                        damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
-                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
-                    };
-                }
                 
                 let stats = activeLedger.actors[actorName];
                 let currentRound = game.combat ? game.combat.round : 1;
@@ -438,41 +550,89 @@ window.CombatParser = {
                 return;
             }
 
+            // --- ATTACK & SAVE PHASE ---
             if (isAttack || isSave || isSkill) {
-                const actor = message.actor;
-                const itemUuid = systemFlags?.item?.uuid || context.item;
-                if (!actor || (!context.type && !itemUuid)) return;
+                if (!msgActor) return;
 
                 const actorName = resolvedOwner;
-                const actorLevel = getActorLevel(actor);
-
-                if (!activeLedger.actors[actorName]) {
-                    activeLedger.actors[actorName] = {
-                        name: actorName, type: actor.type, level: actorLevel, isAlly: checkIsAlly(actor),
-                        damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
-                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
-                    };
-                }
-
                 let stats = activeLedger.actors[actorName];
                 let currentRound = game.combat ? game.combat.round : 1;
                 if (currentRound > activeLedger.maxRounds) activeLedger.maxRounds = currentRound;
 
                 let targetName = "None";
-                if (context.target?.token && canvas.scene) {
-                    const t = canvas.scene.tokens.get(context.target.token);
-                    if (t) targetName = t.name;
-                } else if (game.user.targets.size > 0) {
-                    targetName = Array.from(game.user.targets)[0].name;
+                let targetDoc = null;
+
+                if (context.target?.token) {
+                    let tDoc = fromUuidSync(context.target.token);
+                    if (tDoc) {
+                        targetName = tDoc.name || tDoc.parent?.name || "None";
+                        targetDoc = tDoc.actor || tDoc;
+                    }
+                }
+                
+                if (targetName === "None" && game.user.targets.size > 0) {
+                    let t = Array.from(game.user.targets)[0];
+                    if (t) {
+                        targetName = t.name;
+                        targetDoc = t.actor;
+                    }
                 }
 
-                const outcome = context.outcome; 
-                const isCrit = outcome === 'criticalSuccess' || outcome === 'critical-success';
+                if (targetName === "None") {
+                    let match = fullText.match(/target:\s*([^|]+)/i) || (message.flavor && message.flavor.match(/target:\s*([^|]+)/i));
+                    if (match) {
+                        targetName = match[1].replace(/<[^>]*>?/gm, '').trim();
+                        targetDoc = game.actors.find(a => a.name === targetName) || null;
+                    }
+                }
+
+                if (targetDoc) {
+                    let tRaw = window.CombatParser.getCanonicalName(targetDoc, targetName);
+                    targetName = window.CombatParser.resolveOwner(tRaw, targetDoc, targetName);
+                }
+
+                const outcome = context.outcome;
+                const outcomeStr = (outcome || "").toLowerCase();
+                const isCrit = outcomeStr.includes('criticalsuccess') || outcomeStr.includes('critical-success');
+                const isSucc = outcomeStr === 'success' || (outcomeStr.includes("success") && !isCrit);
+                const isCritFail = outcomeStr.includes('criticalfailure') || outcomeStr.includes('critical-failure');
+                const isFail = outcomeStr === 'failure' || (outcomeStr.includes("failure") && !isCritFail);
                 
-                if (outcome === 'success') stats.hits++;
+                if (isSucc) stats.hits++;
                 if (isCrit) stats.crits++;
-                if (outcome === 'failure') stats.misses++;
-                if (outcome === 'criticalFailure' || outcome === 'critical-failure') stats.critMisses++;
+                if (isFail) stats.misses++;
+                if (isCritFail) stats.critMisses++;
+
+   
+                if (isAttack && targetName !== "None") {
+                    let targetMaster = this.getMasterName(targetDoc, targetName);
+                    let tAlly = targetDoc ? checkIsAlly(targetDoc) : false;
+                    
+                    if (!activeLedger.actors[targetName]) {
+                        activeLedger.actors[targetName] = {
+                            name: targetName, type: targetDoc ? targetDoc.type : "npc", level: targetLevel, isAlly: tAlly, master: targetMaster,
+                            damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
+                            damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
+                            incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
+                            advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {} },
+                            nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: []
+                        };
+                    }
+                    let tStats = activeLedger.actors[targetName];
+                    if (targetMaster && !tStats.master) tStats.master = targetMaster;
+                    
+                    tStats.incomingAttacks = (tStats.incomingAttacks || 0) + 1;
+                    if (isFail || isCritFail) {
+                        tStats.incomingAttacksDodged = (tStats.incomingAttacksDodged || 0) + 1;
+                    }
+                }
+
+                if (isSave) {
+                    stats.incomingSaves = (stats.incomingSaves || 0) + 1;
+                    if (isSucc || isCrit) {
+                        stats.incomingSavesResisted = (stats.incomingSavesResisted || 0) + 1;
+                    }
+                }
 
                 const isHeroPoint = context.isReroll || (context.options && context.options.includes("hero-point")) || /(?:hero point|reroll)/i.test(fullText);
                 if (isHeroPoint) {
@@ -484,8 +644,8 @@ window.CombatParser = {
                 if (message.rolls && message.rolls.length > 0) {
                     const firstRoll = message.rolls[0];
                     totalVal = firstRoll.total;
-                    const d20Term = firstRoll.terms.find(t => t.faces === 20);
-                    if (d20Term && d20Term.results.length > 0) {
+                    const d20Term = firstRoll.terms ? firstRoll.terms.find(t => t.faces === 20) : null;
+                    if (d20Term && d20Term.results && d20Term.results.length > 0) {
                         d20Val = d20Term.results[0].result;
                         modVal = totalVal - d20Val; 
                         if (d20Val === 1) stats.nat1s++;
@@ -540,18 +700,22 @@ window.CombatParser = {
                 
                 if (isCombatPhase) this.saveLiveBackup();
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error("Combat Forensics Parser Error:", e);
+        }
     }
 };
 
 class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationMixin(foundry.applications.api.ApplicationV2) {
     static DEFAULT_OPTIONS = {
-        id: "combat-forensics-ui", classes: ["holodeck-window"], position: { width: 800, height: 750 }, 
+        id: "combat-forensics-ui", 
+        classes: ["forensics-window"], 
+        position: { width: 950, height: 850 }, 
         window: { title: "Combat Forensics", resizable: true },
         actions: {
-            setViewMode: function(event, target) {
+            setViewMode: async function(event, target) {
                 this.viewMode = target.dataset.mode;
-                this.render({parts: ["main"]});
+                this.render({ force: true });
             },
             clearHistory: async function() {
                 if (game.user.isGM) {
@@ -561,7 +725,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     this.selectedEncounter = "exploration";
                     this.expandedLogs = {};
                     this.expandedActors = {};
-                    this.render({parts: ["main"]});
+                    this.render({ force: true });
                     ui.notifications.warn("Combat Forensics | All databases purged.");
                 }
             },
@@ -592,9 +756,49 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                         await game.settings.set('pf2e-holodeck', dbName, db);
                     }
                     this.expandedActors[actorName] = true;
-                    this.render({parts: ["main"]});
+                    this.render({ force: true });
                     ui.notifications.info(`Combat Forensics | ${actorName} allegiance swapped.`);
                 }
+            },
+            
+            deleteEncounter: async function() {
+                const requiredRole = game.settings.get('pf2e-holodeck', 'auditPermission') || 4;
+                if (game.user.role < requiredRole) return;
+
+                let encName = this.selectedEncounter;
+                if (encName === "current" || encName === "exploration" || encName.startsWith("meta")) {
+                    return ui.notifications.warn("Combat Forensics | You can only delete saved historical encounters.");
+                }
+
+                const confirm = await foundry.applications.api.DialogV2.confirm({
+                    window: { title: "Delete Encounter" },
+                    content: `<p>Are you sure you want to permanently delete the encounter <b>${encName}</b>?</p>`,
+                    rejectClose: false
+                });
+
+                if (!confirm) return;
+
+                const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
+                const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
+                const sDb = game.settings.get('pf2e-holodeck', 'holodeckHistory') || {};
+
+                if (hDb[encName]) {
+                    let newDb = JSON.parse(JSON.stringify(hDb));
+                    delete newDb[encName];
+                    await game.settings.set('pf2e-holodeck', 'combatHistory', newDb);
+                } else if (eDb[encName]) {
+                    let newDb = JSON.parse(JSON.stringify(eDb));
+                    delete newDb[encName];
+                    await game.settings.set('pf2e-holodeck', 'explorationHistory', newDb);
+                } else if (sDb[encName]) {
+                    let newDb = JSON.parse(JSON.stringify(sDb));
+                    delete newDb[encName];
+                    await game.settings.set('pf2e-holodeck', 'holodeckHistory', newDb);
+                }
+
+                this.selectedEncounter = "exploration";
+                ui.notifications.info(`Combat Forensics | Encounter deleted.`);
+                this.render(true);
             },
             reassignLog: async function(event, target) {
                 const requiredRole = game.settings.get('pf2e-holodeck', 'auditPermission') || 4;
@@ -621,12 +825,15 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 const logEntry = targetLedger.masterLog.find(l => l.id === logId);
                 if (!logEntry) return ui.notifications.warn("Combat Forensics | Log ID not found. Ensure databases are migrated.");
 
+                let currentLogCoreName = logEntry.name ? logEntry.name.split(/(?: - | \| )/)[0].trim() : "Unknown Action";
+
                 let actorAbilities = {};
                 Object.entries(targetLedger.actors).forEach(([aName, aData]) => {
                     let abilities = new Set();
                     aData.history.forEach(h => {
                         if (h.name && h.name !== "Unknown Action" && h.name !== "Persistent Condition" && h.name !== "Fast Healing / Regen") {
-                            abilities.add(h.name);
+                            let cleanName = h.name.split(/(?: - | \| )/)[0].trim();
+                            abilities.add(cleanName);
                         }
                     });
                     actorAbilities[aName] = Array.from(abilities).sort();
@@ -641,7 +848,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     checklistHtml = `
                         <div style="margin-top: 15px; padding-top: 10px; border-top: 1px dashed #555;">
                             <label style="display: flex; align-items: center; gap: 8px; font-weight: bold; color: #ff4444; cursor: pointer; margin-bottom: 8px; font-size: 1.1em;">
-                                <input type="checkbox" id="mass-audit-master" style="width: 16px; height: 16px;" onchange="document.querySelectorAll('.mass-audit-cb').forEach(cb => cb.checked = this.checked)"> 
+                                <input type="checkbox" id="mass-audit-master" style="width: 16px; height: 16px;"> 
                                 Attribute More (Select additional logs to move)
                             </label>
                             <div style="max-height: 200px; overflow-y: auto; background: #050508; border: 1px solid #333; padding: 10px; border-radius: 3px; box-shadow: inset 0 0 5px #000;">
@@ -686,56 +893,26 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     </div>
                 `;
 
-                new Dialog({
-                    title: "Audit Combat Record",
+                const dialog = new foundry.applications.api.DialogV2({
+                    window: { title: "Audit Combat Record" },
+                    position: { width: 500 },
+                    classes: ["combat-forensics-dialog"],
                     content: content,
-                    render: (html) => {
-                        const sourceSelect = html.find('#new-actor-source')[0];
-                        const actionSelect = html.find('#new-action-select')[0];
-                        const customContainer = html.find('#new-action-custom-container')[0];
-                        const customInput = html.find('#new-action-custom')[0];
-
-                        const updateActionDropdown = () => {
-                            const selectedActor = sourceSelect.value;
-                            const abilities = actorAbilities[selectedActor] || [];
-                            let options = abilities.map(a => `<option value="${a}" ${a === logEntry.name ? 'selected' : ''}>${a}</option>`).join("");
-                            options += `<option value="Other" ${!abilities.includes(logEntry.name) ? 'selected' : ''}>Other (Custom)...</option>`;
-                            
-                            actionSelect.innerHTML = options;
-                            
-                            if (actionSelect.value === "Other") {
-                                customContainer.style.display = "block";
-                                customInput.value = logEntry.name;
-                            } else {
-                                customContainer.style.display = "none";
-                                customInput.value = actionSelect.value;
-                            }
-                        };
-
-                        sourceSelect.addEventListener('change', updateActionDropdown);
-                        actionSelect.addEventListener('change', () => {
-                            if (actionSelect.value === "Other") {
-                                customContainer.style.display = "block";
-                                customInput.value = "";
-                            } else {
-                                customContainer.style.display = "none";
-                                customInput.value = actionSelect.value;
-                            }
-                        });
-                        updateActionDropdown();
-                    },
-                    buttons: {
-                        save: {
-                            icon: '<i class="fas fa-save"></i>',
+                    buttons: [
+                        {
+                            action: "save",
                             label: "Update Ledger",
-                            callback: async (html) => {
-                                const newSource = html.find('#new-actor-source').val();
-                                const actionSelection = html.find('#new-action-select').val();
-                                const customName = html.find('#new-action-custom').val();
+                            icon: "fa-solid fa-save",
+                            default: true,
+                            callback: async (ev, btn, dlg) => {
+                                const html = dlg.element;
+                                const newSource = html.querySelector('#new-actor-source').value;
+                                const actionSelection = html.querySelector('#new-action-select').value;
+                                const customName = html.querySelector('#new-action-custom').value;
                                 const newName = actionSelection === "Other" ? customName : actionSelection;
                                 
                                 let selectedIds = [logId];
-                                html.find('.mass-audit-cb:checked').each(function() { selectedIds.push(this.value); });
+                                html.querySelectorAll('.mass-audit-cb:checked').forEach(cb => selectedIds.push(cb.value));
 
                                 const transferLogStats = (oldStats, newStats, lEntry) => {
                                     if (!oldStats || !newStats) return;
@@ -836,13 +1013,58 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                                     await game.settings.set('pf2e-holodeck', dbName, db);
                                 }
 
-                                this.render({parts: ["main"]});
+                                this.render({ force: true });
                             }
                         },
-                        cancel: { icon: '<i class="fas fa-times"></i>', label: "Cancel" }
-                    },
-                    default: "save"
-                }, { width: 500, classes: ["dialog", "combat-forensics-dialog"] }).render(true);
+                        { action: "cancel", label: "Cancel", icon: "fa-solid fa-times" }
+                    ]
+                });
+
+                await dialog.render(true);
+                const html = dialog.element;
+
+                const sourceSelect = html.querySelector('#new-actor-source');
+                const actionSelect = html.querySelector('#new-action-select');
+                const customContainer = html.querySelector('#new-action-custom-container');
+                const customInput = html.querySelector('#new-action-custom');
+
+                const updateActionDropdown = () => {
+                    const selectedActor = sourceSelect.value;
+                    const abilities = actorAbilities[selectedActor] || [];
+                    let options = abilities.map(a => `<option value="${a}" ${a === currentLogCoreName ? 'selected' : ''}>${a}</option>`).join("");
+                    options += `<option value="Other" ${!abilities.includes(currentLogCoreName) ? 'selected' : ''}>Other (Custom)...</option>`;
+                    
+                    actionSelect.innerHTML = options;
+                    
+                    if (actionSelect.value === "Other") {
+                        customContainer.style.display = "block";
+                        customInput.value = currentLogCoreName;
+                    } else {
+                        customContainer.style.display = "none";
+                        customInput.value = actionSelect.value;
+                    }
+                };
+
+                if (sourceSelect && actionSelect) {
+                    sourceSelect.addEventListener('change', updateActionDropdown);
+                    actionSelect.addEventListener('change', () => {
+                        if (actionSelect.value === "Other") {
+                            customContainer.style.display = "block";
+                            customInput.value = "";
+                        } else {
+                            customContainer.style.display = "none";
+                            customInput.value = actionSelect.value;
+                        }
+                    });
+                    updateActionDropdown();
+                }
+
+                const masterCb = html.querySelector('#mass-audit-master');
+                if (masterCb) {
+                    masterCb.addEventListener('change', (e) => {
+                        html.querySelectorAll('.mass-audit-cb').forEach(cb => cb.checked = e.target.checked);
+                    });
+                }
             },
             exportData: async function() {
                 if (!game.user.isGM) return ui.notifications.warn("Only the GM can archive to journals.");
@@ -931,7 +1153,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                                <select id="import-journal-select" style="flex:1; padding: 6px; background: #222; color: #eee; border: 1px solid #555; border-radius: 3px;">
                                    ${journalOptions}
                                </select>
-                               <button id="btn-import-journal" style="flex: 0 0 auto; background: #113355; border: 1px solid #44aaff; color: #fff;">Load Journal</button>
+                               <button type="button" id="btn-import-journal" style="flex: 0 0 auto; background: #113355; border: 1px solid #44aaff; color: #fff; cursor: pointer;">Load Journal</button>
                            </div>
                        </div>` 
                     : `<div style="color: #888; font-style: italic; margin-bottom: 10px;">No Journal Archives found. Export first.</div>`;
@@ -943,7 +1165,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                         <hr style="border: 0; border-top: 1px dashed #444; margin: 15px 0;">
                         <div class="form-group">
                             <label style="font-weight: bold; color: #aa44ff; display:block; margin-bottom:4px;">From Local JSON File:</label>
-                            <button id="btn-import-json" style="width: 100%; background: #331133; border: 1px solid #aa44ff; color: #fff; padding: 8px;">
+                            <button type="button" id="btn-import-json" style="width: 100%; background: #331133; border: 1px solid #aa44ff; color: #fff; padding: 8px; cursor: pointer;">
                                 <i class="fas fa-upload"></i> Select & Upload JSON Backup
                             </button>
                             <input type="file" id="json-upload-input" accept=".json" style="display: none;">
@@ -971,86 +1193,82 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     await safeMergeDb('holodeckHistory', data.holodeckHistory || data.sim);
 
                     ui.notifications.info("Combat Forensics | Data successfully imported and merged.");
-                    this.render({parts: ["main"]});
+                    this.render({ force: true });
                 };
 
-                let d = new Dialog({
-                    title: "Import Combat Archives",
+                const dialog = new foundry.applications.api.DialogV2({
+                    window: { title: "Import Combat Archives" },
+                    position: { width: 450 },
                     content: content,
-                    render: (html) => {
-                        html.find('#btn-import-journal').click(async (e) => {
-                            e.preventDefault();
-                            const jId = html.find('#import-journal-select').val();
-                            const journal = game.journal.get(jId);
-                            if (journal) {
-                                const archiveData = journal.flags["pf2e-holodeck"].archiveData;
-                                await processImport(archiveData);
-                                d.close();
+                    buttons: [{ action: "close", label: "Close", icon: "fa-solid fa-times" }]
+                });
+
+                await dialog.render(true);
+                const html = dialog.element;
+
+                const btnJournal = html.querySelector('#btn-import-journal');
+                if (btnJournal) {
+                    btnJournal.addEventListener('click', async (e) => {
+                        e.preventDefault();
+                        const jId = html.querySelector('#import-journal-select').value;
+                        const journal = game.journal.get(jId);
+                        if (journal) {
+                            const archiveData = journal.flags["pf2e-holodeck"].archiveData;
+                            await processImport(archiveData);
+                            dialog.close();
+                        }
+                    });
+                }
+
+                const btnJson = html.querySelector('#btn-import-json');
+                const inputJson = html.querySelector('#json-upload-input');
+                if (btnJson && inputJson) {
+                    btnJson.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        inputJson.click();
+                    });
+
+                    inputJson.addEventListener('change', (e) => {
+                        const file = e.target.files[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = async (ev) => {
+                            try {
+                                const json = JSON.parse(ev.target.result);
+                                const data = json.databases || json; 
+                                await processImport(data);
+                                dialog.close();
+                            } catch (err) {
+                                ui.notifications.error("Combat Forensics | Failed to parse JSON file.");
+                                console.error(err);
                             }
-                        });
-
-                        html.find('#btn-import-json').click((e) => {
-                            e.preventDefault();
-                            html.find('#json-upload-input').click();
-                        });
-
-                        html.find('#json-upload-input').change((e) => {
-                            const file = e.target.files[0];
-                            if (!file) return;
-                            const reader = new FileReader();
-                            reader.onload = async (ev) => {
-                                try {
-                                    const json = JSON.parse(ev.target.result);
-                                    const data = json.databases || json; 
-                                    await processImport(data);
-                                    d.close();
-                                } catch (err) {
-                                    ui.notifications.error("Combat Forensics | Failed to parse JSON file.");
-                                    console.error(err);
-                                }
-                            };
-                            reader.readAsText(file);
-                        });
-                    },
-                    buttons: { close: { icon: '<i class="fas fa-times"></i>', label: "Close" } }
-                }, { width: 450 }).render(true);
+                        };
+                        reader.readAsText(file);
+                    });
+                }
             }
         }
     };
 
-    static PARTS = { main: { template: "modules/pf2e-holodeck/templates/analytics.hbs" } };
+    static PARTS = {
+        main: { template: "modules/pf2e-holodeck/templates/analytics.hbs" }
+    };
+    constructor(options={}) {
+        const savedBounds = game.user.getFlag('pf2e-holodeck', 'windowBounds') || {};
+        // Merge the saved bounds into the incoming options before calling super
+        options.position = foundry.utils.mergeObject(options.position || {}, savedBounds, {inplace: false});
+        super(options);
+    }
 
-    _onRender(context, options) {
-        super._onRender(context, options);
-        const selector = this.element.querySelector('#analytics-selector');
-        if (selector) {
-            selector.addEventListener('change', (e) => {
-                this.selectedEncounter = e.target.value;
-                this.expandedLogs = {}; 
-                this.expandedActors = {};
-                this.render({parts: ["main"]});
-            });
-        }
-
-        this.expandedLogs = this.expandedLogs || {};
-        this.expandedActors = this.expandedActors || {};
-
-        this.element.querySelectorAll('details.holodeck-action-card').forEach(d => {
-            d.addEventListener('toggle', (e) => {
-                if (e.target.open) this.expandedLogs[e.target.dataset.logId] = true;
-                else delete this.expandedLogs[e.target.dataset.logId];
-            });
-        });
-
-        this.element.querySelectorAll('details.holodeck-actor-overview').forEach(d => {
-            d.addEventListener('toggle', (e) => {
-                if (e.target.open) this.expandedActors[e.target.dataset.actor] = true;
-                else delete this.expandedActors[e.target.dataset.actor];
-            });
-        });
+    async close(options) {
+        await game.user.setFlag('pf2e-holodeck', 'windowBounds', this.position);
+        return super.close(options);
     }
 
     async _prepareContext(options) {
+        this.viewMode = this.viewMode || 'overview';
+        this.expandedActors = this.expandedActors || {};
+        this.expandedLogs = this.expandedLogs || {};
         if (!this.selectedEncounter) {
             const isCombatActive = (canvas.scene && canvas.scene.getFlag('pf2e-holodeck', 'active')) || (game.combat && game.combat.active && game.combat.started);
             this.selectedEncounter = isCombatActive ? "current" : "exploration";
@@ -1073,6 +1291,15 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
         const simKeys = Object.keys(simDb).reverse(); 
 
         let activeLedger = { actors: {}, masterLog: [], totalDamage: 0, maxRounds: 1 };
+
+        let synergy = {
+            guardianName: null, guardianTaunts: 0, guardianTriggers: 0,
+            hunterName: null, hunterShots: 0, hunterDmg: 0,
+            surgerName: null, surges: 0, surgeDmg: 0,
+            wallName: null, wallMitigated: 0,
+            dodgeKing: { name: "N/A", pct: 0, dodged: 0, total: 0 },
+            saveKing: { name: "N/A", pct: 0, resisted: 0, total: 0 }
+        };
 
         if (isMeta) {
             let targetDb = historyDb;
@@ -1101,17 +1328,27 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     if (!activeLedger.actors[trueName]) {
                         activeLedger.actors[trueName] = { 
                             name: trueName, type: a.type, level: a.level, isAlly: a.isAlly,
-                            damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
+                            master: a.master || null,
+                            damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0,
+                            damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
+                            incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
+                            advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {} },
                             nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
                         };
                     }
                     let m = activeLedger.actors[trueName];
                     m.isAlly = m.isAlly || a.isAlly || a.type === "character" || a.type === "familiar";
+                    m.master = m.master || a.master; 
                     m.damageDealt += (a.damageDealt || 0); m.healingDealt += (a.healingDealt || 0); m.hits += (a.hits || 0); m.misses += (a.misses || 0);
                     m.crits += (a.crits || 0); m.critMisses += (a.critMisses || 0); m.nat1s += (a.nat1s || 0); m.nat20s += (a.nat20s || 0);
                     m.kills += (a.kills || 0); m.mitigated += (a.mitigated || 0); m.heroPoints += (a.heroPoints || 0); m.heroPointCrits += (a.heroPointCrits || 0);
                     m.expectedDamage = (m.expectedDamage || 0) + (a.expectedDamage || 0);
                     m.actualDamageRoll = (m.actualDamageRoll || 0) + (a.actualDamageRoll || 0);
+                    
+                    m.incomingAttacks = (m.incomingAttacks || 0) + (a.incomingAttacks || 0);
+                    m.incomingAttacksDodged = (m.incomingAttacksDodged || 0) + (a.incomingAttacksDodged || 0);
+                    m.incomingSaves = (m.incomingSaves || 0) + (a.incomingSaves || 0);
+                    m.incomingSavesResisted = (m.incomingSavesResisted || 0) + (a.incomingSavesResisted || 0);
                     
                     let safeTurnTimes = Array.isArray(a.turnTimes) ? a.turnTimes : Object.values(a.turnTimes || {});
                     if (safeTurnTimes.length) m.turnTimes.push(...safeTurnTimes);
@@ -1130,6 +1367,31 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                                 m.damageTypes[dt].instances += dData.instances;
                             }
                         }
+                    }
+                    
+                    if (a.damageTakenSources) {
+                        for (let [src, acts] of Object.entries(a.damageTakenSources)) {
+                            if (!m.damageTakenSources[src]) m.damageTakenSources[src] = {};
+                            for (let [act, val] of Object.entries(acts)) {
+                                m.damageTakenSources[src][act] = (m.damageTakenSources[src][act] || 0) + val;
+                            }
+                        }
+                    }
+
+                    if (a.mitigatedSources) {
+                        for (let [src, val] of Object.entries(a.mitigatedSources)) {
+                            if (!m.mitigatedSources[src]) m.mitigatedSources[src] = 0;
+                            m.mitigatedSources[src] += val;
+                        }
+                    }
+
+                    if (a.advanced) {
+                        m.advanced.huntedShots += (a.advanced.huntedShots || 0);
+                        m.advanced.huntedShotDmg += (a.advanced.huntedShotDmg || 0);
+                        m.advanced.taunts += (a.advanced.taunts || 0);
+                        m.advanced.tauntTriggers += (a.advanced.tauntTriggers || 0);
+                        m.advanced.surges += (a.advanced.surges || 0);
+                        m.advanced.surgeFriendlyDmg += (a.advanced.surgeFriendlyDmg || 0);
                     }
                     
                     let safeHistory = Array.isArray(a.history) ? a.history : Object.values(a.history || {});
@@ -1161,6 +1423,46 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             if (a.history && !Array.isArray(a.history)) a.history = Object.values(a.history);
             if (a.turnTimes && !Array.isArray(a.turnTimes)) a.turnTimes = Object.values(a.turnTimes);
             if (a.d20Rolls && !Array.isArray(a.d20Rolls)) a.d20Rolls = Object.values(a.d20Rolls);
+
+            if (a.isAlly) {
+                if (a.mitigated > synergy.wallMitigated) {
+                    synergy.wallName = a.name;
+                    synergy.wallMitigated = a.mitigated;
+                }
+
+                let dPct = a.incomingAttacks > 0 ? Math.round(((a.incomingAttacksDodged || 0) / a.incomingAttacks) * 100) : 0;
+                let sPct = a.incomingSaves > 0 ? Math.round(((a.incomingSavesResisted || 0) / a.incomingSaves) * 100) : 0;
+
+                if (a.incomingAttacks >= 2 && dPct > synergy.dodgeKing.pct) {
+                    synergy.dodgeKing = { name: a.name, pct: dPct, dodged: a.incomingAttacksDodged || 0, total: a.incomingAttacks };
+                } else if (a.incomingAttacks > 0 && synergy.dodgeKing.total === 0 && dPct >= synergy.dodgeKing.pct) {
+                    synergy.dodgeKing = { name: a.name, pct: dPct, dodged: a.incomingAttacksDodged || 0, total: a.incomingAttacks };
+                }
+
+                if (a.incomingSaves >= 2 && sPct > synergy.saveKing.pct) {
+                    synergy.saveKing = { name: a.name, pct: sPct, resisted: a.incomingSavesResisted || 0, total: a.incomingSaves };
+                } else if (a.incomingSaves > 0 && synergy.saveKing.total === 0 && sPct >= synergy.saveKing.pct) {
+                    synergy.saveKing = { name: a.name, pct: sPct, resisted: a.incomingSavesResisted || 0, total: a.incomingSaves };
+                }
+            }
+
+            if (a.advanced) {
+                if (a.advanced.taunts > synergy.guardianTaunts) {
+                    synergy.guardianName = a.name;
+                    synergy.guardianTaunts = a.advanced.taunts;
+                    synergy.guardianTriggers = a.advanced.tauntTriggers;
+                }
+                if (a.advanced.huntedShots > synergy.hunterShots) {
+                    synergy.hunterName = a.name;
+                    synergy.hunterShots = a.advanced.huntedShots;
+                    synergy.hunterDmg = a.advanced.huntedShotDmg;
+                }
+                if (a.advanced.surges > synergy.surges) {
+                    synergy.surgerName = a.name;
+                    synergy.surges = a.advanced.surges;
+                    synergy.surgeDmg = a.advanced.surgeFriendlyDmg;
+                }
+            }
         });
 
         let needsMigrationSave = false;
@@ -1288,8 +1590,25 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             if (eDmg > maxGraphDamage) maxGraphDamage = eDmg;
         }
 
+        let partyPoints = [], enemyPoints = [], pDots = [], eDots = [], xLabels = [];
+        let usableWidth = 700, usableHeight = 110, xOffset = 30, yOffset = 130; 
+
+        for (let i = 0; i < maxRounds; i++) {
+            let x = maxRounds === 1 ? (usableWidth / 2) + xOffset : (i / (maxRounds - 1)) * usableWidth + xOffset;
+            let pY = yOffset - ((partyDamagePerRound[i] || 0) / maxGraphDamage) * usableHeight;
+            let eY = yOffset - ((enemyDamagePerRound[i] || 0) / maxGraphDamage) * usableHeight;
+
+            partyPoints.push(`${x},${pY}`);
+            enemyPoints.push(`${x},${eY}`);
+            pDots.push({x, y: pY});
+            eDots.push({x, y: eY});
+            xLabels.push({ x: x, round: i + 1 });
+        }
+
         const pcs = [];
         const npcs = [];
+        const rawPcs = [];
+        const rawNpcs = [];
         
         let luckiest = { name: "None", avg: 0 };
         let unluckiest = { name: "None", avg: 21 };
@@ -1324,10 +1643,8 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 if (avgD20Val < unluckiest.avg) unluckiest = { name: a.name, avg: avgD20Val };
             }
             
-            const totalAttacks = a.hits + a.misses + a.crits + a.critMisses;
-            const accuracy = totalAttacks > 0 ? Math.round(((a.hits + a.crits) / totalAttacks) * 100) : 0;
-            const damagePercent = Math.round((a.damageDealt / totalDamage) * 100);
-            const dpr = Math.round(a.damageDealt / maxRounds);
+            const totalAttacks = (a.hits || 0) + (a.misses || 0) + (a.crits || 0) + (a.critMisses || 0);
+            const accuracy = totalAttacks > 0 ? Math.round((((a.hits || 0) + (a.crits || 0)) / totalAttacks) * 100) : 0;
             const successRate = accuracy; 
             const totalChecks = Math.max(totalAttacks, totalD20sRolled);
 
@@ -1370,7 +1687,9 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             
             if (a.history) {
                 a.history.forEach(h => {
-                    let aName = h.name || "Unknown";
+                    let cleanName = h.name ? h.name.split(/(?: - | \| )/)[0].trim().replace(/\s*\([^)]*$/, "").replace(/^(?:Damage Roll:\s*|Roll:\s*)/i, "").trim() : "Unknown Action";
+                    let aName = h.minion ? `[${h.minion}] ${cleanName}` : cleanName;
+
                     if (!abilityTotals[aName]) abilityTotals[aName] = { name: aName, damage: 0, healing: 0, casts: 0, damageInstances: 0 };
                     
                     if (h.type === "Damage" || h.type === "Mitigation") {
@@ -1453,17 +1772,147 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 }
             }
 
+            let damageSources = [];
+            if (a.damageTakenSources) {
+                Object.entries(a.damageTakenSources).forEach(([src, actions]) => {
+                    let actArr = Object.entries(actions).map(([aname, aval]) => ({ name: aname, value: aval })).sort((x, y) => y.value - x.value);
+                    let srcTotal = actArr.reduce((sum, act) => sum + act.value, 0);
+                    let srcMit = (a.mitigatedSources && a.mitigatedSources[src]) ? a.mitigatedSources[src] : 0;
+                    damageSources.push({ source: src, total: srcTotal, mitigated: srcMit, actions: actArr });
+                });
+                damageSources.sort((x, y) => y.total - x.total);
+            }
+            
+            let healingSources = [];
+            if (a.healingReceivedSources) {
+                Object.entries(a.healingReceivedSources).forEach(([src, actions]) => {
+                    let actArr = Object.entries(actions).map(([aname, aval]) => ({ name: aname, value: aval })).sort((x, y) => y.value - x.value);
+                    let srcTotal = actArr.reduce((sum, act) => sum + act.value, 0);
+                    healingSources.push({ source: src, total: srcTotal, actions: actArr });
+                });
+                healingSources.sort((x, y) => y.total - x.total);
+            }
+
+            let adv = a.advanced || {};
+            adv.isTopHunter = synergy.hunterName === a.name && adv.huntedShots > 0;
+            adv.isTopGuardian = synergy.guardianName === a.name && adv.taunts > 0;
+            adv.isTopSurger = synergy.surgerName === a.name && adv.surges > 0;
+
+            let dodgeChance = a.incomingAttacks > 0 ? Math.round(((a.incomingAttacksDodged || 0) / a.incomingAttacks) * 100) : 0;
+            let dodgeTooltip = `The number of times a creature failed to break your AC. Total Attacks Taken: ${a.incomingAttacks || 0}, Dodged: ${a.incomingAttacksDodged || 0}`;
+
+            let saveChance = a.incomingSaves > 0 ? Math.round(((a.incomingSavesResisted || 0) / a.incomingSaves) * 100) : 0;
+            let saveTooltip = `The number of times you resisted hostile effects. Total Saves Attempted: ${a.incomingSaves || 0}, Resisted: ${a.incomingSavesResisted || 0}`;
+
+            let takenPieSlices = [];
+            let takenLegendItems = [];
+
+            let totalApplied = 0;
+            if (a.damageTakenSources) {
+                Object.values(a.damageTakenSources).forEach(src => {
+                    Object.values(src).forEach(val => totalApplied += val);
+                });
+            }
+
+            let totalMitigated = a.mitigated || 0;
+            let totalThreat = totalApplied + totalMitigated;
+
+            if (totalThreat > 0) {
+                let tCumAngle = 0;
+                const addSlice = (name, val, color) => {
+                    if (val <= 0) return;
+                    let pct = (val / totalThreat) * 100;
+                    let tooltip = `${name.toUpperCase()}: ${val} (${pct.toFixed(1)}%)`;
+                    let sliceAngle = (val / totalThreat) * (Math.PI * 2);
+
+                    if (val === totalThreat) {
+                        takenPieSlices.push({ isFull: true, path: "M 50 0 A 50 50 0 1 1 49.9 0 Z", color, tooltip });
+                    } else {
+                        let startX = 50 + 50 * Math.cos(tCumAngle);
+                        let startY = 50 + 50 * Math.sin(tCumAngle);
+                        tCumAngle += sliceAngle;
+                        let endX = 50 + 50 * Math.cos(tCumAngle);
+                        let endY = 50 + 50 * Math.sin(tCumAngle);
+                        let largeArc = sliceAngle > Math.PI ? 1 : 0;
+                        let path = `M 50 50 L ${startX} ${startY} A 50 50 0 ${largeArc} 1 ${endX} ${endY} Z`;
+                        takenPieSlices.push({ isFull: false, path, color, tooltip });
+                    }
+                    takenLegendItems.push({ name: name.toUpperCase(), color, tooltip });
+                };
+
+                addSlice("Applied DMG", totalApplied, "#ff6666");
+                addSlice("Mitigated (Blocked)", totalMitigated, "#44aaff");
+            }
+
             const combatantData = { 
-                ...a, damagePercent, dpr, healingDealt: a.healingDealt || 0, accuracy, d20Graph, 
+                ...a, healingDealt: a.healingDealt || 0, accuracy, d20Graph, 
                 maxDamageDealt, maxDamageTaken, maxHealDealt, avgD20Display, totalChecks, successRate, totalTurnTimeStr, avgTurnTimeStr, maxTurnTimeStr, isAlly,
-                abilityBreakdown,
+                abilityBreakdown, damageSources, healingSources, 
+                dodgeChance, dodgeTooltip, saveChance, saveTooltip, incomingAttacks: a.incomingAttacks, incomingSaves: a.incomingSaves,
+                takenPieSlices,
+                takenLegendItems,
+                advanced: adv,
                 logs: processedLogs.filter(l => !l.isDivider && !l.isTurnSummary && l.source === a.name)
             };
             
-            if (isAlly) pcs.push(combatantData);
-            else if (isGM || showAdvanced) npcs.push(combatantData); 
+            if (isAlly) rawPcs.push(combatantData);
+            else if (isGM || showAdvanced) rawNpcs.push(combatantData);
         });
-        
+
+        let masterMap = {};
+        rawPcs.forEach(p => masterMap[p.name] = p);
+        rawNpcs.forEach(p => masterMap[p.name] = p);
+
+        [...rawPcs, ...rawNpcs].forEach(p => {
+            if (!p.master) {
+                let liveAct = game.actors.find(act => act.name === p.name);
+                if (liveAct && liveAct.flags?.pf2e?.master?.id) {
+                    let m = game.actors.get(liveAct.flags.pf2e.master.id);
+                    if (m) p.master = m.name;
+                }
+            }
+        });
+
+        const processMinions = (arr, finalArr) => {
+            arr.forEach(p => {
+                if (p.master && masterMap[p.master]) {
+                    let master = masterMap[p.master];
+                    if (!master.minions) master.minions = [];
+                    master.minions.push(p);
+
+           
+                    master.damageDealt += (p.damageDealt || 0);
+                    master.healingDealt += (p.healingDealt || 0);
+                    master.kills += (p.kills || 0);
+                    master.hits += (p.hits || 0);
+                    master.misses += (p.misses || 0);
+                    master.crits += (p.crits || 0);
+                    master.critMisses += (p.critMisses || 0);
+                    master.actualDamageRoll = (master.actualDamageRoll || 0) + (p.actualDamageRoll || 0);
+                    master.expectedDamage = (master.expectedDamage || 0) + (p.expectedDamage || 0);
+                    
+          
+                    const totalAttacks = master.hits + master.misses + master.crits + master.critMisses;
+                    master.accuracy = totalAttacks > 0 ? Math.round(((master.hits + master.crits) / totalAttacks) * 100) : 0;
+                    master.successRate = master.accuracy;
+                } else {
+                    finalArr.push(p);
+                }
+            });
+        };
+
+        processMinions(rawPcs, pcs);
+        processMinions(rawNpcs, npcs);
+
+        pcs.forEach(p => {
+            p.damagePercent = Math.round((p.damageDealt / totalDamage) * 100) || 0;
+            p.dpr = Math.round(p.damageDealt / maxRounds) || 0;
+        });
+        npcs.forEach(p => {
+            p.damagePercent = Math.round((p.damageDealt / totalDamage) * 100) || 0;
+            p.dpr = Math.round(p.damageDealt / maxRounds) || 0;
+        });
+
         pcs.sort((a, b) => b.damageDealt - a.damageDealt);
         npcs.sort((a, b) => b.damageDealt - a.damageDealt);
         
@@ -1506,7 +1955,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 let sliceAngle = (entry.time / totalCombatTimeSeconds) * (Math.PI * 2);
 
                 if (entry.time === totalCombatTimeSeconds) {
-                    timePieSlices.push({ isFull: true, color: entry.color, tooltip });
+                    timePieSlices.push({ isFull: true, path: "M 50 0 A 50 50 0 1 1 49.9 0 Z", color: entry.color, tooltip });
                 } else {
                     let startX = 50 + 50 * Math.cos(timeCumulativeAngle);
                     let startY = 50 + 50 * Math.sin(timeCumulativeAngle);
@@ -1550,7 +1999,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 let sliceAngle = (dData.instances / totalEnemyInstances) * (Math.PI * 2);
                 
                 if (dData.instances === totalEnemyInstances) {
-                    pieSlices.push({ isFull: true, color: colors[colorIndex % colors.length], tooltip });
+                    pieSlices.push({ isFull: true, path: "M 50 0 A 50 50 0 1 1 49.9 0 Z", color: colors[colorIndex % colors.length], tooltip });
                 } else {
                     let startX = 50 + 50 * Math.cos(cumulativeAngle);
                     let startY = 50 + 50 * Math.sin(cumulativeAngle);
@@ -1605,43 +2054,26 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             else { difficultyStr = "Trivial"; diffColor = "#44ff44"; }
         }
 
-        let partyPoints = [], enemyPoints = [], pDots = [], eDots = [], xLabels = [];
-        let usableWidth = 700, usableHeight = 110, xOffset = 30, yOffset = 130; 
-
-        for (let i = 0; i < maxRounds; i++) {
-            let x = maxRounds === 1 ? (usableWidth / 2) + xOffset : (i / (maxRounds - 1)) * usableWidth + xOffset;
-            let pY = yOffset - ((partyDamagePerRound[i] || 0) / maxGraphDamage) * usableHeight;
-            let eY = yOffset - ((enemyDamagePerRound[i] || 0) / maxGraphDamage) * usableHeight;
-
-            partyPoints.push(`${x},${pY}`);
-            enemyPoints.push(`${x},${eY}`);
-            pDots.push({x, y: pY});
-            eDots.push({x, y: eY});
-            xLabels.push({ x: x, round: i + 1 });
-        }
-
         return { 
+            viewMode: this.viewMode,
+            expandedActors: this.expandedActors,
+            expandedLogs: this.expandedLogs,
             hasData: Object.keys(activeLedger.actors).length > 0,
             isGM, canAudit, showAdvanced, isExploration, isMeta, viewMode: this.viewMode,
             pcs, npcs, rounds, actorGroups,
             historyKeys, exploreKeys, simKeys, selectedEncounter: this.selectedEncounter,
-            expandedLogs: this.expandedLogs || {}, expandedActors: this.expandedActors || {},
             stats: {
                 partyCount: pcs.length, enemyCount: npcs.length,
                 partyActions, enemyActions, difficultyStr, diffColor, partyLevel, partySize, totalXP,
                 totalEncounterTimeStr: formatTime(totalCombatTimeSeconds)
             },
             pitBoss: {
-                luckiestName: luckiest.avg > 0 ? luckiest.name : "N/A",
-                luckiestAvg: luckiest.avg > 0 ? luckiest.avg.toFixed(1) : "-",
-                unluckiestName: unluckiest.avg < 21 ? unluckiest.name : "N/A",
-                unluckiestAvg: unluckiest.avg < 21 ? unluckiest.avg.toFixed(1) : "-",
-                partySkewStr: partySkew > 0 ? `+${partySkew}%` : `${partySkew}%`,
-                partySkewColor: partySkew > 0 ? "#44ff44" : (partySkew < 0 ? "#ff6666" : "#888"),
-                enemySkewStr: enemySkew > 0 ? `+${enemySkew}%` : `${enemySkew}%`,
-                enemySkewColor: enemySkew > 0 ? "#44ff44" : (enemySkew < 0 ? "#ff6666" : "#888"),
+                luckiestName: luckiest.avg > 0 ? luckiest.name : "N/A", luckiestAvg: luckiest.avg > 0 ? luckiest.avg.toFixed(1) : "-",
+                unluckiestName: unluckiest.avg < 21 ? unluckiest.name : "N/A", unluckiestAvg: unluckiest.avg < 21 ? unluckiest.avg.toFixed(1) : "-",
+                partySkewStr: partySkew > 0 ? `+${partySkew}%` : `${partySkew}%`, partySkewColor: partySkew > 0 ? "#44ff44" : (partySkew < 0 ? "#ff6666" : "#888"),
+                enemySkewStr: enemySkew > 0 ? `+${enemySkew}%` : `${enemySkew}%`, enemySkewColor: enemySkew > 0 ? "#44ff44" : (enemySkew < 0 ? "#ff6666" : "#888"),
                 pieSlices, legendItems, partyPaceStr, enemyPaceStr,
-                timePieSlices, timeLegendItems
+                timePieSlices, timeLegendItems, synergy
             },
             graph: {
                 partyPoints: partyPoints.join(" "), enemyPoints: enemyPoints.join(" "),
@@ -1649,34 +2081,39 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             }
         };
     }
+
+   static PARTS = { main: { template: "modules/pf2e-holodeck/templates/analytics.hbs" } };
+
+    _onRender(context, options) {
+        super._onRender(context, options);
+        const detailsElements = this.element.querySelectorAll('details');
+        detailsElements.forEach(el => {
+            el.addEventListener('toggle', (e) => {
+                const target = e.currentTarget;
+                if (target.dataset.actor) this.expandedActors[target.dataset.actor] = target.open;
+                else if (target.dataset.logId) this.expandedLogs[target.dataset.logId] = target.open;
+            });
+        });
+
+        const selector = this.element.querySelector('#analytics-selector');
+        if (selector) {
+            selector.addEventListener('change', (e) => {
+                this.selectedEncounter = e.target.value;
+                this.render({ force: true });
+            });
+        }
+    }
 }
 window.CombatForensicsApp = CombatForensicsApp;
 
 Hooks.once('init', () => {
-    game.settings.register('pf2e-holodeck', 'simplifiedMetrics', {
-        name: "Simplified Metrics",
-        hint: "Hides advanced analytics (Pit Boss charts, ability profiles) to focus only on raw damage and rolls. Ideal for keeping the UI clean for players.",
-        scope: 'world',
-        config: true,
-        type: Boolean,
-        default: false
-    });
-    
-    game.settings.register('pf2e-holodeck', 'auditPermission', {
-        name: "Attribution Audit Role",
-        hint: "The minimum Foundry user role allowed to reassign timeline damage and swap actor allegiances.",
-        scope: 'world',
-        config: true,
-        type: Number,
-        choices: { 1: "Player", 2: "Trusted Player", 3: "Assistant GM", 4: "Game Master" },
-        default: 4
-    });
+    game.settings.register('pf2e-holodeck', 'activeTactical', { name: "Active Combat Backup", scope: 'world', config: false, type: window.CombatLedgerData, default: {} });
+    game.settings.register('pf2e-holodeck', 'simplifiedMetrics', { name: "Simplified Metrics", hint: "Hides advanced analytics (Pit Boss charts, ability profiles) to focus only on raw damage and rolls. Ideal for keeping the UI clean for players.", scope: 'world', config: true, type: Boolean, default: false });
+    game.settings.register('pf2e-holodeck', 'auditPermission', { name: "Attribution Audit Role", hint: "The minimum Foundry user role allowed to reassign timeline damage and swap actor allegiances.", scope: 'world', config: true, type: Number, choices: { 1: "Player", 2: "Trusted Player", 3: "Assistant GM", 4: "Game Master" }, default: 4 });
 
     game.keybindings.register('pf2e-holodeck', 'toggle-analytics', {
-        name: "Toggle Combat Forensics",
-        hint: "Instantly opens or closes the Combat Forensics dashboard.",
-        editable: [{ key: "KeyA", modifiers: ["Shift"] }],
-        restricted: true, 
+        name: "Toggle Combat Forensics", hint: "Instantly opens or closes the Combat Forensics dashboard.",
+        editable: [{ key: "KeyA", modifiers: ["Shift"] }], restricted: true, 
         onDown: () => {
             if (!window.combatForensicsInstance) window.combatForensicsInstance = new window.CombatForensicsApp();
             if (window.combatForensicsInstance.rendered) window.combatForensicsInstance.close();
@@ -1707,21 +2144,25 @@ Hooks.on('createChatMessage', (message) => {
     const context = systemFlags.context || {};
     const fullText = `${message.flavor || ""} ${message.content || ""}`.toLowerCase();
     
-    const isDamageTaken = context.type === "damage-taken";
-    const isAttackOrSave = context.type === "attack-roll" || context.type === "saving-throw";
-    const isSkillOrPerception = context.type === "skill-check" || context.type === "perception-check";
+    const isDamageTaken = context.type === "damage-taken" || fullText.includes("damage taken");
+    const isAttack = context.type === "attack-roll" || context.type === "spell-attack-roll";
+    const isSave = context.type === "saving-throw";
+    const isSkill = context.type === "skill-check" || context.type === "perception-check";
     const isDamageRoll = message.isDamageRoll || context.type === "damage-roll";
     const hasAppliedDamage = !!systemFlags.appliedDamage;
-    const isNarrative = /(?:takes|taking|unscathed|absorbing|healed|restored|reduced by|mitigated|kills them|healing)/.test(fullText);
+    const hasAoEPayload = message.flags?.["aoe-easy-resolve"]?.damageTotal !== undefined;
 
-    if (!isDamageTaken && !isAttackOrSave && !isSkillOrPerception && !isDamageRoll && !hasAppliedDamage && !isNarrative) return;
+ 
+    const isBaseCard = context.type === "spell-cast" || context.type === "action" || context.type === "spell-effect";
+    if (isBaseCard && !hasAoEPayload) return;
+
+    const isNarrative = /(?:takes|taking|applied|healed|restored|reduced by|mitigated|recovered)[^\d]*\d+/i.test(fullText) || /(?:unscathed|completely absorbing|guardian's taunt|wellspring surge|taunt penalty|hunted shot)/i.test(fullText);
+
+    if (!isDamageTaken && !isAttack && !isSave && !isSkill && !isDamageRoll && !hasAppliedDamage && !isNarrative && !hasAoEPayload) return;
 
     window.CombatParser.parseMessage(message);
 
-    if (isHolodeck && game.user.isGM && !isSecret && (hasAppliedDamage || isDamageTaken || isNarrative)) {
-        message.delete();
-    }
-
+    if (isHolodeck && game.user.isGM && !isSecret && (hasAppliedDamage || isDamageTaken || isNarrative || hasAoEPayload)) message.delete();
     if (window.combatForensicsInstance && window.combatForensicsInstance.rendered) window.combatForensicsInstance.render();
 });
 
@@ -1730,22 +2171,16 @@ Hooks.on('updateCombat', (combat, changed) => {
     const activeLedger = window.CombatParser.ledger;
     if (combat.round > activeLedger.maxRounds) activeLedger.maxRounds = combat.round;
 
-    // ONLY touch the stopwatch if the turn, round, or combat state explicitly changes
     if (changed.turn !== undefined || changed.round !== undefined || changed.started === false) {
-        
-        // 1. Stop the clock for the outgoing combatant
         if (activeLedger.currentTurnStart && activeLedger.currentCombatant) {
             const duration = Math.round((Date.now() - activeLedger.currentTurnStart) / 1000);
             const cName = activeLedger.currentCombatant;
             if (activeLedger.actors[cName] && duration >= 0 && duration < 1200) {
                 activeLedger.actors[cName].turnTimes.push(duration);
-                activeLedger.masterLog.push({
-                    isTurnSummary: true, source: cName, duration: duration, round: activeLedger.currentTurnRound || combat.round, type: "Time"
-                });
+                activeLedger.masterLog.push({ isTurnSummary: true, source: cName, duration: duration, round: activeLedger.currentTurnRound || combat.round, type: "Time" });
             }
         }
 
-        // 2. Start the clock for the incoming combatant
         if (combat.started && combat.combatant && changed.started !== false) {
             activeLedger.currentTurnStart = Date.now();
             const c = combat.combatant;
@@ -1764,7 +2199,6 @@ Hooks.on('updateCombat', (combat, changed) => {
         window.combatForensicsInstance.selectedEncounter = "current";
         window.combatForensicsInstance.render(true);
     }
-    
     window.CombatParser.saveLiveBackup();
 });
 
@@ -1802,9 +2236,7 @@ Hooks.on('deleteCombat', async (combat) => {
              const cName = activeLedger.currentCombatant;
              if (activeLedger.actors[cName] && duration >= 0 && duration < 1200) {
                  activeLedger.actors[cName].turnTimes.push(duration);
-                 activeLedger.masterLog.push({
-                     isTurnSummary: true, source: cName, duration: duration, round: activeLedger.currentTurnRound || combat.round, type: "Time"
-                 });
+                 activeLedger.masterLog.push({ isTurnSummary: true, source: cName, duration: duration, round: activeLedger.currentTurnRound || combat.round, type: "Time" });
              }
         }
         await window.CombatParser.saveArchive(); 
@@ -1815,23 +2247,30 @@ Hooks.on('deleteCombat', async (combat) => {
     }
 });
 
-Hooks.on('renderCombatTracker', (app, html) => {
-    const element = html.length ? html[0] : html;
-    const header = element.querySelector('.combat-tracker-header');
-    if (!header || element.querySelector('.combat-parser-container')) return;
+Hooks.on('renderCombatTracker', async (app, html, data) => {
+    const trackerElement = (app.element instanceof HTMLElement) ? app.element : (html.length ? html[0] : html);
+    if (!trackerElement) return;
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const header = trackerElement.querySelector('.combat-tracker-header') || trackerElement.querySelector('.directory-header');
+    if (!header || trackerElement.querySelector('.combat-parser-container')) return;
 
     const btnContainer = document.createElement('div');
     btnContainer.className = "flexrow combat-parser-container";
     btnContainer.style.cssText = "margin: 5px 8px; padding-bottom: 5px; border-bottom: 1px solid var(--color-border-dark-1); display: flex; gap: 5px;";
     
     const btn = document.createElement('button');
+    btn.type = "button"; 
     btn.className = "combat-forensics-btn";
-    btn.style.cssText = "flex: 1; background: rgba(0, 0, 0, 0.5); border: 1px solid #ffaa00; color: #eee; text-shadow: 0 0 5px #000;";
+    btn.style.cssText = "flex: 1; background: rgba(0, 0, 0, 0.5); border: 1px solid #ffaa00; color: #eee; text-shadow: 0 0 5px #000; cursor: pointer;";
     btn.innerHTML = '<i class="fas fa-microscope"></i> Combat Forensics';
-    btn.addEventListener('click', () => {
+    
+    btn.addEventListener('click', (e) => {
+        e.preventDefault();
         if (!window.combatForensicsInstance) window.combatForensicsInstance = new window.CombatForensicsApp();
-        window.combatForensicsInstance.render({force: true});
+        if (window.combatForensicsInstance.rendered) window.combatForensicsInstance.close();
+        else window.combatForensicsInstance.render({force: true});
     });
+    
     btnContainer.appendChild(btn);
     header.after(btnContainer);
 });
