@@ -173,6 +173,15 @@
                                             </span>
                                         </div>
                                         {{/if}}
+                                        {{#if pitBoss.synergy.meatShield.name}}
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-size: 0.85rem;">
+            <span style="color: #ccc; font-weight: bold; text-transform: uppercase;">Always in the Way:</span>
+            <div style="text-align: right;">
+                <span style="color: #ffcc00; font-weight: bold;">{{pitBoss.synergy.meatShield.name}}</span>
+                <span style="color: #aaa; margin-left: 4px;">({{pitBoss.synergy.meatShield.coverProvided}} Interrupts)</span>
+            </div>
+        </div>
+        {{/if}}
                                         {{#if pitBoss.synergy.dodgeKing.total}}
                                         <div class="pitboss-stat-row">
                                             <span class="stat-label">Hardest to Hit:</span> 
@@ -336,6 +345,15 @@
                                 <div style="font-size: 0.7em; color: #888; text-transform: uppercase; letter-spacing: 1px;">Resist Chance</div>
                                 <div style="color: #aa44ff; font-weight: bold; font-size: 1.2em;">{{saveChance}}%</div>
                             </div>
+<div class="metric-group">
+    <div class="metric-label">Shots Interrupted</div>
+    <div class="metric-value">
+        <span style="color: #ff6666;" title="Enemy shots you blocked">{{advanced.interruptedEnemy}}</span> 
+        <span style="color: #888;">/</span> 
+        <span style="color: #44aaff;" title="Friendly shots you blocked">{{advanced.interruptedFriendly}}</span>
+    </div>
+</div>
+
                             {{#if mitigated}}
                             <div style="border-left: 1px solid #333; padding-left: 15px;">
                                 <div style="font-size: 0.7em; color: #888; text-transform: uppercase; letter-spacing: 1px;">Total Blocked</div>
@@ -581,6 +599,14 @@
                                 <div style="font-size: 0.7em; color: #888; text-transform: uppercase; letter-spacing: 1px;">Resist Chance</div>
                                 <div style="color: #aa44ff; font-weight: bold; font-size: 1.2em;">{{saveChance}}%</div>
                             </div>
+                            <div class="metric-group">
+    <div class="metric-label">Shots Interrupted</div>
+    <div class="metric-value">
+        <span style="color: #ff6666;" title="Enemy shots you blocked">{{advanced.interruptedEnemy}}</span> 
+        <span style="color: #888;">/</span> 
+        <span style="color: #44aaff;" title="Friendly shots you blocked">{{advanced.interruptedFriendly}}</span>
+    </div>
+</div>
                             {{#if maxHealDealt}}
                             <div style="border-left: 1px solid #333; padding-left: 15px;">
                                 <div style="font-size: 0.7em; color: #888; text-transform: uppercase; letter-spacing: 1px;">Biggest Heal</div>

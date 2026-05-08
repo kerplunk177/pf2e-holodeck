@@ -206,6 +206,37 @@ window.CombatParser = {
 
             const isDamageTaken = context.type === "damage-taken" || lowerFull.includes("damage taken");
             const isAttack = context.type === "attack-roll" || context.type === "spell-attack-roll";
+
+           const coverFlags = message.flags?.["tactical-cover"];
+           if (coverFlags && Array.isArray(coverFlags.obstructors)) {
+               coverFlags.obstructors.forEach(obs => {
+                   const obsName = typeof obs === 'string' ? obs : obs.name;
+                   const isFriendlyShot = obs.isFriendlyFire ?? false;
+
+                   // Bulletproof actor initialization
+                   if (!activeLedger.actors[obsName]) {
+                       activeLedger.actors[obsName] = {
+                           name: obsName, type: "npc", level: 0, isAlly: false, master: null,
+                           damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0,
+                           damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
+                           incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
+                           advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {}, providedCover: 0, interruptedEnemy: 0, interruptedFriendly: 0 },
+                           nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: []
+                       };
+                   }
+                   
+                   let obsStats = activeLedger.actors[obsName];
+                   obsStats.advanced = obsStats.advanced || {};
+                   
+                   // Route the stat to the correct team
+                   if (isFriendlyShot) {
+                       obsStats.advanced.interruptedFriendly = (obsStats.advanced.interruptedFriendly || 0) + 1;
+                   } else {
+                       obsStats.advanced.interruptedEnemy = (obsStats.advanced.interruptedEnemy || 0) + 1;
+                   }
+                   obsStats.advanced.providedCover = (obsStats.advanced.providedCover || 0) + 1;
+               });
+           }
             const isSave = context.type === "saving-throw";
             const isSkill = context.type === "skill-check" || context.type === "perception-check";
             const isDamageRoll = message.isDamageRoll || context.type === "damage-roll";
@@ -604,10 +635,12 @@ window.CombatParser = {
                 if (isCritFail) stats.critMisses++;
 
    
+                // RESTORED: Target tracking for incoming attacks
                 if (isAttack && targetName !== "None") {
                     let targetMaster = this.getMasterName(targetDoc, targetName);
                     let tAlly = targetDoc ? checkIsAlly(targetDoc) : false;
-                    
+                    let targetLevel = targetDoc ? getActorLevel(targetDoc) : 0; // <--- THE FIX
+
                     if (!activeLedger.actors[targetName]) {
                         activeLedger.actors[targetName] = {
                             name: targetName, type: targetDoc ? targetDoc.type : "npc", level: targetLevel, isAlly: tAlly, master: targetMaster,
@@ -1298,9 +1331,9 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             surgerName: null, surges: 0, surgeDmg: 0,
             wallName: null, wallMitigated: 0,
             dodgeKing: { name: "N/A", pct: 0, dodged: 0, total: 0 },
-            saveKing: { name: "N/A", pct: 0, resisted: 0, total: 0 }
+            saveKing: { name: "N/A", pct: 0, resisted: 0, total: 0 },
+            meatShield: { name: null, coverProvided: 0 } // <-- ADD THIS LINE
         };
-
         if (isMeta) {
             let targetDb = historyDb;
             if (this.selectedEncounter === "meta-sim") targetDb = simDb;
@@ -1386,6 +1419,9 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     }
 
                     if (a.advanced) {
+                        m.advanced.providedCover = (m.advanced.providedCover || 0) + (a.advanced.providedCover || 0);
+                        m.advanced.interruptedEnemy = (m.advanced.interruptedEnemy || 0) + (a.advanced.interruptedEnemy || 0);
+    m.advanced.interruptedFriendly = (m.advanced.interruptedFriendly || 0) + (a.advanced.interruptedFriendly || 0);
                         m.advanced.huntedShots += (a.advanced.huntedShots || 0);
                         m.advanced.huntedShotDmg += (a.advanced.huntedShotDmg || 0);
                         m.advanced.taunts += (a.advanced.taunts || 0);
@@ -1461,6 +1497,11 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     synergy.surgerName = a.name;
                     synergy.surges = a.advanced.surges;
                     synergy.surgeDmg = a.advanced.surgeFriendlyDmg;
+                }
+                // --- NEW MEAT SHIELD TRACKING ---
+                if (a.advanced.providedCover > synergy.meatShield.coverProvided) {
+                    synergy.meatShield.name = a.name;
+                    synergy.meatShield.coverProvided = a.advanced.providedCover;
                 }
             }
         });
@@ -2073,7 +2114,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 partySkewStr: partySkew > 0 ? `+${partySkew}%` : `${partySkew}%`, partySkewColor: partySkew > 0 ? "#44ff44" : (partySkew < 0 ? "#ff6666" : "#888"),
                 enemySkewStr: enemySkew > 0 ? `+${enemySkew}%` : `${enemySkew}%`, enemySkewColor: enemySkew > 0 ? "#44ff44" : (enemySkew < 0 ? "#ff6666" : "#888"),
                 pieSlices, legendItems, partyPaceStr, enemyPaceStr,
-                timePieSlices, timeLegendItems, synergy
+                timePieSlices, timeLegendItems, synergy:synergy
             },
             graph: {
                 partyPoints: partyPoints.join(" "), enemyPoints: enemyPoints.join(" "),
