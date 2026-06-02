@@ -793,7 +793,181 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     ui.notifications.info(`Combat Forensics | ${actorName} allegiance swapped.`);
                 }
             },
-            
+            createManualLog: async function(event, target) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                const requiredRole = game.settings.get('pf2e-holodeck', 'auditPermission') || 4;
+                if (game.user.role < requiredRole) return;
+
+                let encName = this.selectedEncounter;
+                if (!encName || encName.startsWith("meta")) {
+                    return ui.notifications.warn("Combat Forensics | Cannot add logs to a Meta aggregate. Select a specific encounter.");
+                }
+
+                // Acquire the correct ledger
+                let targetLedger = this.selectedEncounter === "current" ? window.CombatParser.ledger :
+                                   this.selectedEncounter === "exploration" ? window.CombatParser.explorationLedger : null;
+                let dbName = null;
+
+                if (!targetLedger) {
+                    const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
+                    const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
+                    const sDb = game.settings.get('pf2e-holodeck', 'holodeckHistory') || {};
+                    if (hDb[encName]) { targetLedger = hDb[encName]; dbName = 'combatHistory'; }
+                    else if (eDb[encName]) { targetLedger = eDb[encName]; dbName = 'explorationHistory'; }
+                    else if (sDb[encName]) { targetLedger = sDb[encName]; dbName = 'holodeckHistory'; }
+                }
+
+                if (!targetLedger) return ui.notifications.error("Combat Forensics | Could not locate ledger data.");
+
+                // Build dynamic dropdowns based on who is currently in the encounter
+                let actorOptions = `<option value="Environment">Environment</option><option value="Unknown">Unknown</option>`;
+                let targetOptions = `<option value="None">None</option>`;
+                Object.keys(targetLedger.actors).sort().forEach(a => {
+                    actorOptions += `<option value="${a}">${a}</option>`;
+                    targetOptions += `<option value="${a}">${a}</option>`;
+                });
+
+                const maxRound = targetLedger.maxRounds || 1;
+
+                const content = `
+                    <style>
+                        .manual-log-form { display: grid; gap: 8px; margin-bottom: 10px; }
+                        .manual-log-form label { font-weight: bold; font-size: 0.9em; color: #ccc; }
+                        .manual-log-form input, .manual-log-form select { width: 100%; padding: 6px; background: rgba(0,0,0,0.5); border: 1px solid #444; color: #fff; border-radius: 3px; font-family: inherit; }
+                    </style>
+                    <div class="manual-log-form">
+                        <div><label>Round</label><input type="number" id="ml-round" value="${maxRound}" min="1"></div>
+                        <div><label>Source / Attacker</label><select id="ml-source">${actorOptions}</select></div>
+                        <div><label>Target</label><select id="ml-target">${targetOptions}</select></div>
+                        <div><label>Action Name</label><input type="text" id="ml-name" value="Manual Adjustment" placeholder="e.g., GM Fiat, Potion, Fall Damage"></div>
+                        <div><label>Log Type</label>
+                            <select id="ml-type">
+                                <option value="Damage">Damage</option>
+                                <option value="Heal">Healing</option>
+                                <option value="Misc">Miscellaneous / Note</option>
+                            </select>
+                        </div>
+                        <div><label>Value (HP Amount)</label><input type="number" id="ml-value" value="0" min="0"></div>
+                        <div><label>Result / Display Text</label><input type="text" id="ml-result" value="Applied manually." placeholder="e.g., 15 DMG, 10 HEAL"></div>
+                    </div>
+                    <p style="font-size: 0.8em; color: #888; font-style: italic;">Note: This will permanently add the entry to the timeline and adjust total Damage/Healing stats for the selected actors.</p>
+                `;
+
+                const confirm = await foundry.applications.api.DialogV2.prompt({
+                    window: { title: "Inject Manual Log Entry" },
+                    content: content,
+                    ok: {
+                        label: "Inject Entry",
+                        icon: "fas fa-syringe",
+                        callback: () => {
+                            return {
+                                round: parseInt(document.getElementById('ml-round').value) || 1,
+                                source: document.getElementById('ml-source').value,
+                                target: document.getElementById('ml-target').value,
+                                name: document.getElementById('ml-name').value || "Manual Adjustment",
+                                type: document.getElementById('ml-type').value,
+                                value: parseInt(document.getElementById('ml-value').value) || 0,
+                                result: document.getElementById('ml-result').value || "Manual Entry"
+                            };
+                        }
+                    },
+                    rejectClose: false
+                });
+
+                if (!confirm) return;
+
+                const newLog = {
+                    id: foundry.utils.randomID(),
+                    round: confirm.round,
+                    source: confirm.source,
+                    target: confirm.target,
+                    name: confirm.name,
+                    type: confirm.type,
+                    result: confirm.result,
+                    damageVal: confirm.type === "Damage" ? confirm.value : 0,
+                    healVal: confirm.type === "Heal" ? confirm.value : 0,
+                    isTurnSummary: false,
+                    isDivider: false,
+                    detail: "Manually entered by auditor.",
+                    tags: ["Manual"]
+                };
+
+                targetLedger.masterLog = Array.isArray(targetLedger.masterLog) ? targetLedger.masterLog : Object.values(targetLedger.masterLog);
+                targetLedger.masterLog.push(newLog);
+                
+                if (confirm.round > (targetLedger.maxRounds || 1)) targetLedger.maxRounds = confirm.round;
+
+                // Safely ensure the actors exist in case they somehow got deleted
+                const initActor = (aName) => {
+                    if (!aName || aName === "None" || aName === "Environment" || aName === "Unknown") return;
+                    if (!targetLedger.actors[aName]) {
+                        targetLedger.actors[aName] = {
+                            name: aName, type: "npc", level: 0, isAlly: false, master: null,
+                            damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0,
+                            damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
+                            incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
+                            advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {}, providedCover: 0, interruptedEnemy: 0, interruptedFriendly: 0 },
+                            nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: []
+                        };
+                    }
+                };
+
+                initActor(confirm.source);
+                initActor(confirm.target);
+
+                // Wire up Source Stats
+                if (confirm.source !== "Environment" && confirm.source !== "Unknown") {
+                    let sStats = targetLedger.actors[confirm.source];
+                    if (confirm.type === "Damage") sStats.damageDealt += confirm.value;
+                    else if (confirm.type === "Heal") sStats.healingDealt += confirm.value;
+                    
+                    sStats.history = Array.isArray(sStats.history) ? sStats.history : Object.values(sStats.history || {});
+                    sStats.history.push(newLog);
+                }
+
+                // Wire up Target Threat Profile Stats
+                if (confirm.target !== "None") {
+                    let tStats = targetLedger.actors[confirm.target];
+                    let cleanAction = confirm.name;
+                    
+                    if (confirm.type === "Damage") {
+                        tStats.damageTakenSources = tStats.damageTakenSources || {};
+                        tStats.damageTakenSources[confirm.source] = tStats.damageTakenSources[confirm.source] || {};
+                        tStats.damageTakenSources[confirm.source][cleanAction] = (tStats.damageTakenSources[confirm.source][cleanAction] || 0) + confirm.value;
+                    } else if (confirm.type === "Heal") {
+                        tStats.healingReceivedSources = tStats.healingReceivedSources || {};
+                        tStats.healingReceivedSources[confirm.source] = tStats.healingReceivedSources[confirm.source] || {};
+                        tStats.healingReceivedSources[confirm.source][cleanAction] = (tStats.healingReceivedSources[confirm.source][cleanAction] || 0) + confirm.value;
+                    }
+                }
+
+                // Append to Global Damage Total
+                if (confirm.type === "Damage") {
+                    targetLedger.totalDamage = (targetLedger.totalDamage || 0) + confirm.value;
+                }
+
+                // Force Raw Database Overwrite
+                const flatLedger = JSON.parse(JSON.stringify(targetLedger));
+
+                if (dbName) {
+                    let fullDb = game.settings.get('pf2e-holodeck', dbName) || {};
+                    let newDb = JSON.parse(JSON.stringify(fullDb));
+                    newDb[encName] = flatLedger;
+                    await game.settings.set('pf2e-holodeck', dbName, {}); 
+                    await game.settings.set('pf2e-holodeck', dbName, newDb);
+                } else if (encName === "current") {
+                    window.CombatParser.ledger = flatLedger;
+                    await game.settings.set('pf2e-holodeck', 'activeTactical', {});
+                    await game.settings.set('pf2e-holodeck', 'activeTactical', flatLedger);
+                } else if (encName === "exploration") {
+                    window.CombatParser.explorationLedger = flatLedger;
+                }
+
+                ui.notifications.info("Combat Forensics | Manual log entry injected.");
+                this.render(true);
+            },
             deleteEncounter: async function() {
                 const requiredRole = game.settings.get('pf2e-holodeck', 'auditPermission') || 4;
                 if (game.user.role < requiredRole) return;

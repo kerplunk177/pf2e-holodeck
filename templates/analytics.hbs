@@ -30,9 +30,10 @@
                     {{#each simKeys}}<option value="{{this}}" {{#if (eq ../selectedEncounter this)}}selected{{/if}}>{{this}}</option>{{/each}}
                     </optgroup>
                     {{/if}}
-                </select>
+               </select>
 
          {{#if isGM}}
+                <button type="button" class="forensics-btn" data-action="createManualLog" data-tooltip="Add Manual Log" style="background: #333311; border-color: #ffff44; color: #ffff44;"><i class="fas fa-plus-circle"></i></button>
                 <button type="button" class="forensics-btn" data-action="deleteEncounter" data-tooltip="Delete Selected Encounter" style="background: #441111; border-color: #ff4444; color: #ff6666;"><i class="fas fa-calendar-times"></i></button>
                 <button type="button" class="forensics-btn" data-action="exportData" data-tooltip="Export to Journal" style="background: #113311; border-color: #44ff44; color: #44ff44;"><i class="fas fa-book"></i></button>
                 <button type="button" class="forensics-btn" data-action="downloadJSON" data-tooltip="Download Raw JSON" style="background: #113355; border-color: #44aaff; color: #44aaff;"><i class="fas fa-file-code"></i></button>
@@ -285,10 +286,11 @@
                                 {{#if ../canAudit}}
                                 <a data-action="swapAllegiance" data-actor="{{name}}" style="margin-right: 15px; color: #aaa; cursor: pointer; font-size: 0.9em;"><i class="fas fa-exchange-alt"></i></a>
                                 {{/if}}
-                                {{#if ../isExploration}}
+                               {{#if ../isExploration}}
                                     <span style="color: #fff;">{{totalChecks}} Checks</span> 
                                 {{else}}
-                                    <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span> 
+                                    <span style="color: #aaa; font-size: 0.85em; margin-right: 12px; font-weight: normal;" title="Average Turn Length / Max Turn Length"><i class="far fa-clock"></i> {{avgTurnTimeStr}} <span style="color: #666;">/</span> {{maxTurnTimeStr}}</span>
+                                    <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span>
                                     <span style="color: #ffaa00; margin-left: 5px; font-size: 0.9em;">[{{kills}}K / {{assists}}A]</span>
                                     {{#if healingDealt}}<span style="color: #44ff44; margin-left: 5px;">| {{healingDealt}} HEAL</span>{{/if}}
                                 {{/if}}
@@ -562,10 +564,11 @@
                         <div class="actor-summary-header">
                             <span class="actor-name-row"><i class="fas fa-caret-right disclosure-arrow"></i>{{name}}</span>
                             <span class="actor-metrics-row">
-                                {{#if ../canAudit}}
+                               {{#if ../canAudit}}
                                 <a data-action="swapAllegiance" data-actor="{{name}}" style="margin-right: 15px; color: #aaa; cursor: pointer; font-size: 0.9em;"><i class="fas fa-exchange-alt"></i></a>
                                 {{/if}}
-                                <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span> 
+                                <span style="color: #aaa; font-size: 0.85em; margin-right: 12px; font-weight: normal;" title="Average Turn Length / Max Turn Length"><i class="far fa-clock"></i> {{avgTurnTimeStr}} <span style="color: #666;">/</span> {{maxTurnTimeStr}}</span>
+                                <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span>
                                 <span style="color: #ffaa00; margin-left: 5px; font-size: 0.9em;">[{{kills}}K / {{assists}}A]</span>
                                 {{#if healingDealt}}<span style="color: #44ff44; margin-left: 5px;">| {{healingDealt}} HEAL</span>{{/if}}
                             </span>
