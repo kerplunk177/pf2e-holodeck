@@ -322,7 +322,10 @@ window.CombatParser = {
                     targetLevel = getActorLevel(targetDoc);
                 }
                 let actualTargetMinion = (tRawName !== targetName) ? tRawName.replace(/^.+?'s /i, '').trim() : null;
-
+                let flavorText = message.flavor || message.item?.name || fullText;
+                if (flavorText.includes("Fast Healing") || flavorText.includes("Regeneration")) {
+                    attackerName = targetName;
+                }
                 let hasSolidOrigin = false;
                 let originUuid = systemFlags.origin?.uuid || message.flags["aoe-easy-resolve"]?.origin;
                 if (originUuid) {
@@ -482,8 +485,7 @@ window.CombatParser = {
                     aStats.damageDealt += valueTotal;
                     if (isKill) aStats.kills++;
                     activeLedger.totalDamage += valueTotal;
-
-                    if (lowerFull.includes("hunted shot fused damage") || lowerFull.includes("hunted shot: fused damage")) {
+                    if (actionNameResolved.toLowerCase().includes("hunted shot") || lowerFull.includes("hunted shot")) {
                         aStats.advanced.huntedShotDmg += valueTotal;
                     }
                     if (lowerFull.includes("wellspring surge")) {
