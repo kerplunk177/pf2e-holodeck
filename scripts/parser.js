@@ -247,7 +247,8 @@ window.CombatParser = {
             const isBaseCard = context.type === "spell-cast" || context.type === "action" || context.type === "spell-effect";
             if (isBaseCard && !hasAoEPayload) return;
 
-            const isNarrative = /(?:takes|taking|applied|healed|restored|reduced by|mitigated|recovered)[^\d]*\d+/i.test(fullText) || /(?:unscathed|completely absorbing)/i.test(fullText);
+            const isStandardItemCard = message.flags?.pf2e?.context?.type === "item-chat" || (!message.flags?.pf2e?.context?.type && message.item);
+            const isNarrative = !isStandardItemCard && (/(?:takes|taking|applied|healed|restored|reduced by|mitigated|recovered)[^\d]*\d+/i.test(fullText) || /(?:unscathed|completely absorbing|guardian's taunt|wellspring surge|taunt penalty|hunted shot)/i.test(fullText));
 
             let isSynergyTextOnly = false;
             if (!isDamageTaken && !isAttack && !isSave && !isSkill && !isDamageRoll && !hasAppliedDamage && !isNarrative && !hasAoEPayload) {
@@ -368,13 +369,8 @@ window.CombatParser = {
                 } else if (applied && applied.amount !== undefined) {
                      valueTotal = parseInt(applied.amount);
                 } else {
-                  
-                    const textMatch = fullText.match(/(?:damaged for|healed|takes|restored|healing|applied|recovered).*?(\d+)/i) || fullText.match(/(\d+)\s*(?:HP|Damage|DMG|Heal|Healing|applied)/i);
+                    const textMatch = fullText.match(/(?:damaged for|healed|takes|restored|healing|applied|recovered|loses|hit for)[^\d]*(\d+)/i) || fullText.match(/(\d+)\s*(?:HP|Damage|DMG|Heal|Healing|applied|points)/i);
                     if (textMatch) valueTotal = parseInt(textMatch[1]);
-                    else {
-                        const allNums = fullText.match(/(\d+)/g);
-                        if (allNums && allNums.length > 0) valueTotal = parseInt(allNums[allNums.length - 1]);
-                    }
                 }
                 
                 if (/(?:unscathed|completely absorbing)/i.test(fullText)) valueTotal = 0;
@@ -970,13 +966,141 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 ui.notifications.info("Combat Forensics | Manual log entry injected.");
                 this.render(true);
             },
+            deleteLog: async function(event, target) {
+                const requiredRole = game.settings.get('pf2e-holodeck', 'auditPermission') || 4;
+                if (game.user.role < requiredRole) return;
+
+                const logId = target.dataset.logId;
+                let targetLedger = this.selectedEncounter === "current" ? window.CombatParser.ledger :
+                                   this.selectedEncounter === "exploration" ? window.CombatParser.explorationLedger : null;
+                let dbName = null;
+                let encName = this.selectedEncounter;
+
+                if (!targetLedger) {
+                    const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
+                    const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
+                    const sDb = game.settings.get('pf2e-holodeck', 'holodeckHistory') || {};
+                    if (hDb[encName]) { targetLedger = hDb[encName]; dbName = 'combatHistory'; }
+                    else if (eDb[encName]) { targetLedger = eDb[encName]; dbName = 'explorationHistory'; }
+                    else if (sDb[encName]) { targetLedger = sDb[encName]; dbName = 'holodeckHistory'; }
+                }
+
+                if (!targetLedger) return;
+
+                const logIndex = targetLedger.masterLog.findIndex(l => l.id === logId);
+                if (logIndex === -1) return ui.notifications.warn("Combat Forensics | Log ID not found.");
+
+                const lEntry = targetLedger.masterLog[logIndex];
+                
+                const confirm = await foundry.applications.api.DialogV2.confirm({
+                    window: { title: "Delete Log Entry" },
+                    content: `<p>Are you sure you want to permanently delete this action: <b>${lEntry.name}</b>?</p>`,
+                    rejectClose: false
+                });
+                
+                if (!confirm) return;
+
+                // 1. Clean up the Source Actor's Math
+                let sourceStats = targetLedger.actors[lEntry.source];
+                if (sourceStats) {
+                    if (lEntry.type === "Damage" || lEntry.type === "Mitigation") {
+                        sourceStats.damageDealt = Math.max(0, sourceStats.damageDealt - (lEntry.damageVal || 0));
+                        if (lEntry.result && lEntry.result.includes("💀")) sourceStats.kills = Math.max(0, sourceStats.kills - 1);
+                    } else if (lEntry.type === "Heal") {
+                        sourceStats.healingDealt = Math.max(0, sourceStats.healingDealt - (lEntry.healVal || 0));
+                    } else if (lEntry.type === "Roll") {
+                        let poolMatch = lEntry.result ? lEntry.result.match(/Dice Pool:\s*(\d+)/) : null;
+                        if (poolMatch) sourceStats.actualDamageRoll = Math.max(0, sourceStats.actualDamageRoll - parseInt(poolMatch[1]));
+                        
+                        if (lEntry.detail) {
+                            let typeMatches = [...lEntry.detail.matchAll(/(\d+)\s+([a-zA-Z]+)/g)];
+                            typeMatches.forEach(m => {
+                                let val = parseInt(m[1]);
+                                let dType = m[2].toLowerCase();
+                                if (sourceStats.damageTypes && sourceStats.damageTypes[dType]) {
+                                    sourceStats.damageTypes[dType].total = Math.max(0, sourceStats.damageTypes[dType].total - val);
+                                    sourceStats.damageTypes[dType].instances = Math.max(0, sourceStats.damageTypes[dType].instances - 1);
+                                }
+                            });
+                        }
+                    } else if (lEntry.type === "Attack" || lEntry.type === "Save" || lEntry.type === "Skill") {
+                        let res = lEntry.result || "";
+                        if (res.includes("CRITICALSUCCESS") || res.includes("CRITICAL SUCCESS")) sourceStats.crits = Math.max(0, sourceStats.crits - 1);
+                        else if (res.includes("SUCCESS")) sourceStats.hits = Math.max(0, sourceStats.hits - 1);
+                        else if (res.includes("CRITICALFAILURE") || res.includes("CRITICAL FAILURE")) sourceStats.critMisses = Math.max(0, sourceStats.critMisses - 1);
+                        else if (res.includes("FAILURE")) sourceStats.misses = Math.max(0, sourceStats.misses - 1);
+
+                        let d20Match = lEntry.detail ? lEntry.detail.match(/d20:\s*(\d+)/) : null;
+                        if (d20Match) {
+                            let d20Val = parseInt(d20Match[1]);
+                            if (d20Val === 20) sourceStats.nat20s = Math.max(0, sourceStats.nat20s - 1);
+                            if (d20Val === 1) sourceStats.nat1s = Math.max(0, sourceStats.nat1s - 1);
+                            if (d20Val >= 1 && d20Val <= 20 && sourceStats.d20Rolls && sourceStats.d20Rolls[d20Val - 1] > 0) {
+                                sourceStats.d20Rolls[d20Val - 1]--;
+                            }
+                        }
+                    }
+                    // Snip it out of their personal history
+                    sourceStats.history = sourceStats.history.filter(h => h.id !== logId);
+                }
+
+                // 2. Clean up Target Threat Profiles
+                let tStats = targetLedger.actors[lEntry.target];
+                if (tStats && lEntry.name) {
+                    let cleanAction = lEntry.name.split(/(?: - | \| )/)[0].trim();
+                    if (lEntry.type === "Damage" && tStats.damageTakenSources && tStats.damageTakenSources[lEntry.source]) {
+                         tStats.damageTakenSources[lEntry.source][cleanAction] = Math.max(0, (tStats.damageTakenSources[lEntry.source][cleanAction] || 0) - (lEntry.damageVal || 0));
+                    } else if (lEntry.type === "Heal" && tStats.healingReceivedSources && tStats.healingReceivedSources[lEntry.source]) {
+                         tStats.healingReceivedSources[lEntry.source][cleanAction] = Math.max(0, (tStats.healingReceivedSources[lEntry.source][cleanAction] || 0) - (lEntry.healVal || 0));
+                    }
+                }
+
+                // 3. Subtract from Encounter Total
+                if (lEntry.type === "Damage") targetLedger.totalDamage = Math.max(0, targetLedger.totalDamage - (lEntry.damageVal || 0));
+
+                // 4. Snip from Master Log
+                targetLedger.masterLog.splice(logIndex, 1);
+
+                // 5. Force Raw Database Overwrite
+                const flatLedger = JSON.parse(JSON.stringify(targetLedger));
+                if (dbName) {
+                    let fullDb = game.settings.get('pf2e-holodeck', dbName) || {};
+                    let newDb = JSON.parse(JSON.stringify(fullDb));
+                    newDb[encName] = flatLedger;
+                    await game.settings.set('pf2e-holodeck', dbName, {}); 
+                    await game.settings.set('pf2e-holodeck', dbName, newDb);
+                } else if (encName === "current") {
+                    window.CombatParser.ledger = flatLedger;
+                    await game.settings.set('pf2e-holodeck', 'activeTactical', {});
+                    await game.settings.set('pf2e-holodeck', 'activeTactical', flatLedger);
+                } else if (encName === "exploration") {
+                    window.CombatParser.explorationLedger = flatLedger;
+                }
+
+                ui.notifications.info("Combat Forensics | Log entry deleted safely.");
+                this.render(true);
+            },
             deleteEncounter: async function() {
                 const requiredRole = game.settings.get('pf2e-holodeck', 'auditPermission') || 4;
                 if (game.user.role < requiredRole) return;
 
                 let encName = this.selectedEncounter;
-                if (encName === "current" || encName === "exploration" || encName.startsWith("meta")) {
-                    return ui.notifications.warn("Combat Forensics | You can only delete saved historical encounters.");
+                
+                if (encName === "current") {
+                    const confirm = await foundry.applications.api.DialogV2.confirm({
+                        window: { title: "Archive & Wipe Live Combat" },
+                        content: `<p>Force an archive and wipe the current live combat tracker?</p>`,
+                        rejectClose: false
+                    });
+                    if (!confirm) return;
+                    await window.CombatParser.saveArchive();
+                    ui.notifications.info("Combat Forensics | Live combat archived and wiped.");
+                    this.render(true);
+                    return;
+                }
+
+                if (encName === "exploration" || encName.startsWith("meta")) {
+                    return ui.notifications.warn("Combat Forensics | You cannot delete exploration or meta databases from here.");
                 }
 
                 const confirm = await foundry.applications.api.DialogV2.confirm({
@@ -1500,6 +1624,62 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
         const simKeys = Object.keys(simDb).reverse(); 
 
         let activeLedger = { actors: {}, masterLog: [], totalDamage: 0, maxRounds: 1 };
+
+        // --- DOSSIER AGGREGATION ---
+        let dossier = {
+            allActors: [],
+            selectedActor: this.dossierActor || null,
+            stats: { deployments: 0, totalDamage: 0, kills: 0, mitigated: 0 },
+            encounters: []
+        };
+
+        let uniqueActors = new Set();
+        const scanDbForActors = (db) => {
+            Object.values(db).forEach(enc => {
+                if (enc.actors) Object.keys(enc.actors).forEach(a => uniqueActors.add(a));
+            });
+        };
+        scanDbForActors(historyDb);
+        scanDbForActors(exploreDb);
+        scanDbForActors(simDb);
+        dossier.allActors = Array.from(uniqueActors).sort((a, b) => a.localeCompare(b));
+
+        if (dossier.selectedActor) {
+            const extractDossierData = (db, dbLabel) => {
+                Object.entries(db).forEach(([encName, enc]) => {
+                    if (enc.actors && enc.actors[dossier.selectedActor]) {
+                        let a = enc.actors[dossier.selectedActor];
+                        dossier.stats.deployments++;
+                        dossier.stats.totalDamage += (a.damageDealt || 0);
+                        dossier.stats.kills += (a.kills || 0);
+                        dossier.stats.mitigated += (a.mitigated || 0);
+
+                        // Calculate average d20 for this specific deployment
+                        const rawRolls = a.d20Rolls || Array(20).fill(0);
+                        let totalD20Sum = 0; let totalD20sRolled = 0;
+                        rawRolls.forEach((count, idx) => { totalD20Sum += (idx + 1) * count; totalD20sRolled += count; });
+                        let avgD20 = totalD20sRolled > 0 ? (totalD20Sum / totalD20sRolled).toFixed(1) : "-";
+
+                        dossier.encounters.push({
+                            encName: encName,
+                            dbType: dbLabel,
+                            damageDealt: a.damageDealt || 0,
+                            mitigated: a.mitigated || 0,
+                            kills: a.kills || 0,
+                            avgD20: avgD20,
+                            isParty: a.isAlly
+                        });
+                    }
+                });
+            };
+
+            extractDossierData(historyDb, "Combat");
+            extractDossierData(exploreDb, "Exploration");
+            extractDossierData(simDb, "Simulation");
+
+            // Sort encounters so the newest is at the top
+            dossier.encounters.reverse();
+        }
 
         let synergy = {
             guardianName: null, guardianTaunts: 0, guardianTriggers: 0,
@@ -2279,6 +2459,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             isGM, canAudit, showAdvanced, isExploration, isMeta, viewMode: this.viewMode,
             pcs, npcs, rounds, actorGroups,
             historyKeys, exploreKeys, simKeys, selectedEncounter: this.selectedEncounter,
+            dossier: dossier,
             stats: {
                 partyCount: pcs.length, enemyCount: npcs.length,
                 partyActions, enemyActions, difficultyStr, diffColor, partyLevel, partySize, totalXP,
@@ -2319,7 +2500,16 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 this.render({ force: true });
             });
         }
-    }
+
+        // --- NEW DOSSIER SELECTOR ---
+        const dossierSelector = this.element.querySelector('#dossier-actor-select');
+        if (dossierSelector) {
+            dossierSelector.addEventListener('change', (e) => {
+                this.dossierActor = e.target.value;
+                this.render({ force: true });
+            });
+        }
+    } 
 }
 window.CombatForensicsApp = CombatForensicsApp;
 
@@ -2419,8 +2609,11 @@ Hooks.on('updateCombat', (combat, changed) => {
     window.CombatParser.saveLiveBackup();
 });
 
-Hooks.on('combatStart', (combat, updateData) => {
+Hooks.on('combatStart', async (combat, updateData) => {
     if (game.user.isGM) {
+        if (window.CombatParser.ledger && window.CombatParser.ledger.totalDamage > 0) {
+            await window.CombatParser.saveArchive();
+        }
         window.CombatParser.saveExplorationArchive(); 
         window.CombatParser.resetLedger(); 
         window.CombatParser.seedCombatants(combat);

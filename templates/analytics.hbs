@@ -53,7 +53,7 @@
         </div>
     </div>
 
-    <div class="forensics-nav">
+   <div class="forensics-nav">
         <button type="button" class="forensics-nav-btn {{#if (eq viewMode 'overview')}}active{{else}}inactive{{/if}}" data-action="setViewMode" data-mode="overview">
             <i class="fas fa-chart-pie"></i> Overview
         </button>
@@ -62,6 +62,9 @@
         </button>
         <button type="button" class="forensics-nav-btn {{#if (eq viewMode 'actor')}}active{{else}}inactive{{/if}}" data-action="setViewMode" data-mode="actor">
             <i class="fas fa-users"></i> Combatants
+        </button>
+        <button type="button" class="forensics-nav-btn {{#if (eq viewMode 'dossier')}}active{{else}}inactive{{/if}}" data-action="setViewMode" data-mode="dossier">
+            <i class="fas fa-id-card"></i> Dossier
         </button>
     </div>
 
@@ -824,6 +827,64 @@
                             {{/if}}
                         {{/each}}
                     {{/each}}
+                </div>
+            {{/if}}
+
+            {{#if (eq viewMode 'dossier')}}
+                <div class="dossier-container" style="padding: 15px; color: #eee; font-family: 'Signika', sans-serif;">
+                    <div style="margin-bottom: 20px; display: flex; align-items: center; gap: 10px; background: rgba(0,0,0,0.3); padding: 10px; border: 1px solid #333; border-radius: 4px;">
+                        <label style="font-weight: bold; color: #aa44ff; text-transform: uppercase;"><i class="fas fa-search"></i> Select Operative:</label>
+                        <select id="dossier-actor-select" style="padding: 6px; background: #111; color: #eee; border: 1px solid #555; border-radius: 4px; flex: 1; max-width: 400px; font-size: 1.1em;">
+                            <option value="">-- Awaiting Selection --</option>
+                            {{#each dossier.allActors}}
+                                <option value="{{this}}" {{#if (eq ../dossier.selectedActor this)}}selected{{/if}}>{{this}}</option>
+                            {{/each}}
+                        </select>
+                    </div>
+
+                    {{#if dossier.selectedActor}}
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #aa44ff; padding-bottom: 5px; margin-bottom: 15px;">
+                            <h2 style="margin: 0; color: #aa44ff; font-size: 1.8em;">{{dossier.selectedActor}}</h2>
+                            <span style="font-size: 0.8em; color: #888; text-transform: uppercase; letter-spacing: 2px;">// Lifetime Campaign Record</span>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px;">
+                            <div style="background: rgba(0,0,0,0.5); padding: 15px; border: 1px solid #333; border-radius: 4px; text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.8);">
+                                <div style="font-size: 0.8em; color: #888; text-transform: uppercase; margin-bottom: 5px;">Deployments</div>
+                                <div style="font-size: 2em; font-weight: bold; color: #fff;">{{dossier.stats.deployments}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 15px; border: 1px solid #333; border-radius: 4px; text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.8);">
+                                <div style="font-size: 0.8em; color: #888; text-transform: uppercase; margin-bottom: 5px;">Total Damage Dealt</div>
+                                <div style="font-size: 2em; font-weight: bold; color: #ff6666;">{{dossier.stats.totalDamage}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 15px; border: 1px solid #333; border-radius: 4px; text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.8);">
+                                <div style="font-size: 0.8em; color: #888; text-transform: uppercase; margin-bottom: 5px;">Confirmed Kills</div>
+                                <div style="font-size: 2em; font-weight: bold; color: #ffaa00;">{{dossier.stats.kills}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 15px; border: 1px solid #333; border-radius: 4px; text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.8);">
+                                <div style="font-size: 0.8em; color: #888; text-transform: uppercase; margin-bottom: 5px;">Damage Mitigated</div>
+                                <div style="font-size: 2em; font-weight: bold; color: #44aaff;">{{dossier.stats.mitigated}}</div>
+                            </div>
+                        </div>
+
+                        <h3 style="color: #ccc; margin-bottom: 10px; font-size: 1.1em;"><i class="fas fa-history"></i> Deployment History</h3>
+                        <div style="max-height: 400px; overflow-y: auto; padding-right: 5px;">
+                            {{#each dossier.encounters}}
+                                <div style="background: rgba(20,20,25,0.9); border-left: 3px solid {{#if isParty}}#44aaff{{else}}#ff4444{{/if}}; border-radius: 0 4px 4px 0; margin-bottom: 8px; padding: 10px 15px; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <div style="font-weight: bold; color: #eee; font-size: 1.05em; margin-bottom: 3px;">{{encName}}</div>
+                                        <div style="color: #888; font-size: 0.75em; text-transform: uppercase;">{{dbType}}</div>
+                                    </div>
+                                    <div style="display: flex; gap: 20px; font-size: 0.9em; color: #bbb; text-align: right;">
+                                        <span title="Damage Dealt"><i class="fas fa-crosshairs" style="color: #ff6666;"></i> {{damageDealt}}</span>
+                                        <span title="Damage Mitigated"><i class="fas fa-shield-alt" style="color: #44aaff;"></i> {{mitigated}}</span>
+                                        <span title="Kills"><i class="fas fa-skull" style="color: #ffaa00;"></i> {{kills}}</span>
+                                        <span title="Average d20 Roll"><i class="fas fa-dice-d20" style="color: #44ffaa;"></i> {{avgD20}}</span>
+                                    </div>
+                                </div>
+                            {{/each}}
+                        </div>
+                    {{/if}}
                 </div>
             {{/if}}
 
