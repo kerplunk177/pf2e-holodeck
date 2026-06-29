@@ -323,10 +323,7 @@ window.CombatParser = {
                     targetLevel = getActorLevel(targetDoc);
                 }
                 let actualTargetMinion = (tRawName !== targetName) ? tRawName.replace(/^.+?'s /i, '').trim() : null;
-                let flavorText = message.flavor || message.item?.name || fullText;
-                if (flavorText.includes("Fast Healing") || flavorText.includes("Regeneration")) {
-                    attackerName = targetName;
-                }
+             
                 let hasSolidOrigin = false;
                 let originUuid = systemFlags.origin?.uuid || message.flags["aoe-easy-resolve"]?.origin;
                 if (originUuid) {
@@ -347,7 +344,25 @@ window.CombatParser = {
                     }
                 }
 
-               
+                // --- NEW: INTERCEPT CONDITIONS TO PREVENT MISATTRIBUTION ---
+                let flavorText = message.flavor || message.item?.name || fullText;
+                
+                // 1. Lock down Fast Healing / Regen so it doesn't attach to the previous weapon
+                if (flavorText.toLowerCase().includes("fast healing") || flavorText.toLowerCase().includes("regeneration")) {
+                    attackerName = targetName;
+                    actionNameResolved = flavorText.toLowerCase().includes("regeneration") ? "Regeneration" : "Fast Healing";
+                    hasSolidOrigin = true; 
+                }
+                // 2. Punt Persistent Damage to the Environment so it leaves PC output profiles
+                else if (flavorText.toLowerCase().includes("persistent damage") || actionNameResolved.toLowerCase().includes("persistent damage") || lowerFull.includes("persistent damage")) {
+                    attackerName = "Environment"; 
+                    hasSolidOrigin = true; 
+                }
+                // 3. Lock down self-heals (like Potions) so they don't trigger the fallback loop
+                else if (isHealing && attackerName === targetName) {
+                    hasSolidOrigin = true;
+                }
+
                 if (!hasSolidOrigin && (attackerName === "Unknown Source" || attackerName === targetName)) {
                     for (let i = activeLedger.masterLog.length - 1; i >= 0; i--) {
                         let prev = activeLedger.masterLog[i];
@@ -1627,47 +1642,155 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 
         // --- DOSSIER AGGREGATION ---
         let dossier = {
-            allActors: [],
-            selectedActor: this.dossierActor || null,
-            stats: { deployments: 0, totalDamage: 0, kills: 0, mitigated: 0 },
-            encounters: []
+            partyActors: [], enemyActors: [], selectedActor: this.dossierActor || null,
+            selectedActorImg: "icons/svg/mystery-man.svg", stats: {}, encounters: []
         };
 
-        let uniqueActors = new Set();
+        let uniqueActorsMap = new Map();
         const scanDbForActors = (db) => {
             Object.values(db).forEach(enc => {
-                if (enc.actors) Object.keys(enc.actors).forEach(a => uniqueActors.add(a));
+                if (enc.actors) {
+                    Object.entries(enc.actors).forEach(([aName, aData]) => {
+                        if (!uniqueActorsMap.has(aName)) uniqueActorsMap.set(aName, { name: aName, isAlly: aData.isAlly });
+                        else if (aData.isAlly) uniqueActorsMap.get(aName).isAlly = true; 
+                    });
+                }
             });
         };
-        scanDbForActors(historyDb);
-        scanDbForActors(exploreDb);
-        scanDbForActors(simDb);
-        dossier.allActors = Array.from(uniqueActors).sort((a, b) => a.localeCompare(b));
+        
+        scanDbForActors(historyDb); scanDbForActors(exploreDb); scanDbForActors(simDb);
+
+        let allMapped = Array.from(uniqueActorsMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+        dossier.partyActors = allMapped.filter(a => a.isAlly).map(a => a.name);
+        dossier.enemyActors = allMapped.filter(a => !a.isAlly).map(a => a.name);
 
         if (dossier.selectedActor) {
+            let liveActor = game.actors.find(a => a.name === dossier.selectedActor);
+            if (liveActor && liveActor.img) dossier.selectedActorImg = liveActor.img;
+
+            let g = {
+                deployments: 0, totalDamage: 0, kills: 0, mitigated: 0, healing: 0,
+                expectedDmg: 0, actualDmg: 0,
+                incomingAttacks: 0, incomingDodged: 0, incomingSaves: 0, incomingResisted: 0,
+                maxDamageDealt: 0, maxDamageTaken: 0, maxHealDealt: 0,
+                turnTimes: [], d20Rolls: Array(20).fill(0),
+                adv: { taunts: 0, huntedShots: 0, huntedShotDmg: 0, providedCover: 0, intEnemy: 0, intFriendly: 0 }
+            };
+
             const extractDossierData = (db, dbLabel) => {
                 Object.entries(db).forEach(([encName, enc]) => {
                     if (enc.actors && enc.actors[dossier.selectedActor]) {
                         let a = enc.actors[dossier.selectedActor];
-                        dossier.stats.deployments++;
-                        dossier.stats.totalDamage += (a.damageDealt || 0);
-                        dossier.stats.kills += (a.kills || 0);
-                        dossier.stats.mitigated += (a.mitigated || 0);
+                        g.deployments++;
+                        g.totalDamage += (a.damageDealt || 0);
+                        g.healing += (a.healingDealt || 0);
+                        g.kills += (a.kills || 0);
+                        g.mitigated += (a.mitigated || 0);
+                        g.expectedDmg += (a.expectedDamage || 0);
+                        g.actualDmg += (a.actualDamageRoll || 0);
+                        g.incomingAttacks += (a.incomingAttacks || 0);
+                        g.incomingDodged += (a.incomingAttacksDodged || 0);
+                        g.incomingSaves += (a.incomingSaves || 0);
+                        g.incomingResisted += (a.incomingSavesResisted || 0);
 
-                        // Calculate average d20 for this specific deployment
-                        const rawRolls = a.d20Rolls || Array(20).fill(0);
-                        let totalD20Sum = 0; let totalD20sRolled = 0;
-                        rawRolls.forEach((count, idx) => { totalD20Sum += (idx + 1) * count; totalD20sRolled += count; });
-                        let avgD20 = totalD20sRolled > 0 ? (totalD20Sum / totalD20sRolled).toFixed(1) : "-";
+                        if (a.advanced) {
+                            g.adv.taunts += (a.advanced.taunts || 0);
+                            g.adv.huntedShots += (a.advanced.huntedShots || 0);
+                            g.adv.huntedShotDmg += (a.advanced.huntedShotDmg || 0);
+                            g.adv.providedCover += (a.advanced.providedCover || 0);
+                            g.adv.intEnemy += (a.advanced.interruptedEnemy || 0);
+                            g.adv.intFriendly += (a.advanced.interruptedFriendly || 0);
+                        }
+
+                        if (a.turnTimes) g.turnTimes.push(...(Array.isArray(a.turnTimes) ? a.turnTimes : Object.values(a.turnTimes)));
+                        let safeD20s = Array.isArray(a.d20Rolls) ? a.d20Rolls : Object.values(a.d20Rolls || {});
+                        if (safeD20s.length) { for (let i = 0; i < 20; i++) g.d20Rolls[i] += (safeD20s[i] || 0); }
+
+                        let eMaxDmg = 0; let eMaxHeal = 0;
+                        if (a.history) {
+                            let safeHist = Array.isArray(a.history) ? a.history : Object.values(a.history);
+                            safeHist.forEach(h => {
+                                if ((h.type === "Damage" || h.type === "Mitigation") && h.damageVal > eMaxDmg) eMaxDmg = h.damageVal;
+                                if (h.type === "Heal" && h.healVal > eMaxHeal) eMaxHeal = h.healVal;
+                            });
+                        }
+                        if (eMaxDmg > g.maxDamageDealt) g.maxDamageDealt = eMaxDmg;
+                        if (eMaxHeal > g.maxHealDealt) g.maxHealDealt = eMaxHeal;
+
+                        let eMaxTaken = 0;
+                        if (enc.masterLog) {
+                            let sLog = Array.isArray(enc.masterLog) ? enc.masterLog : Object.values(enc.masterLog);
+                            sLog.forEach(l => {
+                                if (!l.isDivider && l.target === dossier.selectedActor && (l.type === "Damage" || l.type === "Mitigation")) {
+                                    if (l.damageVal > eMaxTaken) eMaxTaken = l.damageVal;
+                                }
+                            });
+                        }
+                        if (eMaxTaken > g.maxDamageTaken) g.maxDamageTaken = eMaxTaken;
+
+                        let encD20Sum = 0; let encD20Count = 0;
+                        safeD20s.forEach((c, i) => { encD20Sum += (i+1)*c; encD20Count += c; });
+                        let encAvgD20 = encD20Count > 0 ? (encD20Sum / encD20Count).toFixed(1) : "-";
+
+                        // --- NEW: Calculate Total Encounter Time & Roster ---
+                        let encTotalSeconds = 0;
+                        let otherParty = [];
+                        let otherEnemies = [];
+                        Object.values(enc.actors).forEach(act => {
+                            if (act.turnTimes) {
+                                let tArr = Array.isArray(act.turnTimes) ? act.turnTimes : Object.values(act.turnTimes);
+                                tArr.forEach(t => encTotalSeconds += t);
+                            }
+                            if (act.name !== dossier.selectedActor) {
+                                if (act.isAlly) otherParty.push(act.name);
+                                else otherEnemies.push(act.name);
+                            }
+                        });
+                        let encM = Math.floor(encTotalSeconds / 60); let encS = encTotalSeconds % 60;
+                        let encDurationStr = encM > 0 ? `${encM}m ${encS}s` : `${encS}s`;
+
+                        // --- NEW: Deep Action Extraction for Targets Damaged ---
+                        let targetsDamaged = [];
+                        Object.entries(enc.actors).forEach(([tName, tData]) => {
+                            if (tData.damageTakenSources && tData.damageTakenSources[dossier.selectedActor]) {
+                                let actions = [];
+                                let totalToTarget = 0;
+                                Object.entries(tData.damageTakenSources[dossier.selectedActor]).forEach(([actName, dmg]) => {
+                                    totalToTarget += dmg;
+                                    actions.push({ name: actName, amount: dmg });
+                                });
+                                actions.sort((x, y) => y.amount - x.amount);
+                                if (totalToTarget > 0) targetsDamaged.push({ name: tName, amount: totalToTarget, actions: actions });
+                            }
+                        });
+                        targetsDamaged.sort((x, y) => y.amount - x.amount);
+
+                        // --- NEW: Deep Action Extraction for Attackers ---
+                        let attackers = [];
+                        if (a.damageTakenSources) {
+                            Object.entries(a.damageTakenSources).forEach(([atkName, actObj]) => {
+                                let actions = [];
+                                let totalFromAtk = 0;
+                                Object.entries(actObj).forEach(([actName, dmg]) => {
+                                    totalFromAtk += dmg;
+                                    actions.push({ name: actName, amount: dmg });
+                                });
+                                actions.sort((x, y) => y.amount - x.amount);
+                                if (totalFromAtk > 0) attackers.push({ name: atkName, amount: totalFromAtk, actions: actions });
+                            });
+                        }
+                        attackers.sort((x, y) => y.amount - x.amount);
 
                         dossier.encounters.push({
-                            encName: encName,
-                            dbType: dbLabel,
-                            damageDealt: a.damageDealt || 0,
-                            mitigated: a.mitigated || 0,
-                            kills: a.kills || 0,
-                            avgD20: avgD20,
-                            isParty: a.isAlly
+                            encName: encName, dbType: dbLabel, isParty: a.isAlly,
+                            damageDealt: a.damageDealt || 0, mitigated: a.mitigated || 0, healingDealt: a.healingDealt || 0, kills: a.kills || 0,
+                            avgD20: encAvgD20, eMaxDmg, eMaxTaken, eMaxHeal,
+                            eDodge: a.incomingAttacks > 0 ? Math.round((a.incomingAttacksDodged / a.incomingAttacks)*100) : 0,
+                            eResist: a.incomingSaves > 0 ? Math.round((a.incomingSavesResisted / a.incomingSaves)*100) : 0,
+                            advanced: a.advanced || {}, targetsDamaged, attackers,
+                            durationStr: encDurationStr,
+                            otherPartyStr: otherParty.length > 0 ? otherParty.join(", ") : "None",
+                            otherEnemiesStr: otherEnemies.length > 0 ? otherEnemies.join(", ") : "None"
                         });
                     }
                 });
@@ -1677,7 +1800,28 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             extractDossierData(exploreDb, "Exploration");
             extractDossierData(simDb, "Simulation");
 
-            // Sort encounters so the newest is at the top
+            let gTurnSum = g.turnTimes.reduce((a,b)=>a+b, 0);
+            let avgPaceSec = g.turnTimes.length > 0 ? Math.round(gTurnSum / g.turnTimes.length) : 0;
+            let paceStr = "N/A";
+            if (avgPaceSec > 0) {
+                let m = Math.floor(avgPaceSec / 60); let s = avgPaceSec % 60;
+                paceStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
+            }
+
+            let skew = g.expectedDmg > 0 ? Math.round(((g.actualDmg / g.expectedDmg) - 1) * 100) : 0;
+            let d20Sum = 0; let d20Count = 0;
+            g.d20Rolls.forEach((c, i) => { d20Sum += (i+1)*c; d20Count += c; });
+
+            dossier.stats = {
+                deployments: g.deployments, totalDamage: g.totalDamage, kills: g.kills, mitigated: g.mitigated, healing: g.healing,
+                pace: paceStr, skewStr: skew > 0 ? `+${skew}%` : `${skew}%`, skewColor: skew > 0 ? "#44ff44" : (skew < 0 ? "#ff6666" : "#888"),
+                avgD20: d20Count > 0 ? (d20Sum / d20Count).toFixed(1) : "N/A",
+                maxHit: g.maxDamageDealt, maxTaken: g.maxDamageTaken, maxHeal: g.maxHealDealt,
+                dodgeChance: g.incomingAttacks > 0 ? Math.round((g.incomingDodged / g.incomingAttacks) * 100) : 0,
+                resistChance: g.incomingSaves > 0 ? Math.round((g.incomingResisted / g.incomingSaves) * 100) : 0,
+                adv: g.adv
+            };
+
             dossier.encounters.reverse();
         }
 
@@ -2085,7 +2229,11 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             if (a.history) {
                 a.history.forEach(h => {
                     let cleanName = h.name ? h.name.split(/(?: - | \| )/)[0].trim().replace(/\s*\([^)]*$/, "").replace(/^(?:Damage Roll:\s*|Roll:\s*)/i, "").trim() : "Unknown Action";
-                    let aName = h.minion ? `[${h.minion}] ${cleanName}` : cleanName;
+                    
+                    // --- STRIP SYSTEM PREFIXES AND MINION BRACKETS ---
+                    cleanName = cleanName.replace(/^(?:Melee Strike:\s*|Ranged Strike:\s*|Strike:\s*|Uses\s*)/i, "").trim();
+                    cleanName = cleanName.replace(/^\[.*?\]\s*/, "").trim();
+                    let aName = cleanName;
 
                     if (!abilityTotals[aName]) abilityTotals[aName] = { name: aName, damage: 0, healing: 0, casts: 0, damageInstances: 0 };
                     

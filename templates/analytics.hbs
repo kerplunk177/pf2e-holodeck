@@ -836,57 +836,216 @@
                         <label style="font-weight: bold; color: #aa44ff; text-transform: uppercase;"><i class="fas fa-search"></i> Select Operative:</label>
                         <select id="dossier-actor-select" style="padding: 6px; background: #111; color: #eee; border: 1px solid #555; border-radius: 4px; flex: 1; max-width: 400px; font-size: 1.1em;">
                             <option value="">-- Awaiting Selection --</option>
-                            {{#each dossier.allActors}}
-                                <option value="{{this}}" {{#if (eq ../dossier.selectedActor this)}}selected{{/if}}>{{this}}</option>
-                            {{/each}}
+                            <optgroup label="Party & Allies" style="color: #44aaff;">
+                                {{#each dossier.partyActors}}<option value="{{this}}" style="color: #eee;" {{#if (eq ../dossier.selectedActor this)}}selected{{/if}}>{{this}}</option>{{/each}}
+                            </optgroup>
+                            <optgroup label="Enemies & Monsters" style="color: #ff6666;">
+                                {{#each dossier.enemyActors}}<option value="{{this}}" style="color: #eee;" {{#if (eq ../dossier.selectedActor this)}}selected{{/if}}>{{this}}</option>{{/each}}
+                            </optgroup>
                         </select>
                     </div>
 
                     {{#if dossier.selectedActor}}
-                        <div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #aa44ff; padding-bottom: 5px; margin-bottom: 15px;">
-                            <h2 style="margin: 0; color: #aa44ff; font-size: 1.8em;">{{dossier.selectedActor}}</h2>
-                            <span style="font-size: 0.8em; color: #888; text-transform: uppercase; letter-spacing: 2px;">// Lifetime Campaign Record</span>
+                        <div style="display: flex; align-items: flex-end; border-bottom: 2px solid #aa44ff; padding-bottom: 15px; margin-bottom: 20px; gap: 15px;">
+                            <img src="{{dossier.selectedActorImg}}" style="width: 90px; height: 90px; object-fit: cover; border-radius: 8px; border: 2px solid #aa44ff; background: #000; box-shadow: 0 0 10px rgba(170, 68, 255, 0.3);">
+                            <div style="flex: 1; padding-bottom: 5px;">
+                                <h2 style="margin: 0 0 5px 0; color: #aa44ff; font-size: 2.2em; line-height: 1; text-shadow: 0 2px 4px rgba(0,0,0,0.8);">{{dossier.selectedActor}}</h2>
+                                <span style="font-size: 0.85em; color: #888; text-transform: uppercase; letter-spacing: 2px;">// Lifetime Campaign Record</span>
+                            </div>
                         </div>
                         
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px;">
-                            <div style="background: rgba(0,0,0,0.5); padding: 15px; border: 1px solid #333; border-radius: 4px; text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.8);">
-                                <div style="font-size: 0.8em; color: #888; text-transform: uppercase; margin-bottom: 5px;">Deployments</div>
-                                <div style="font-size: 2em; font-weight: bold; color: #fff;">{{dossier.stats.deployments}}</div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-bottom: 25px;">
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Deployments</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #fff;">{{dossier.stats.deployments}}</div>
                             </div>
-                            <div style="background: rgba(0,0,0,0.5); padding: 15px; border: 1px solid #333; border-radius: 4px; text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.8);">
-                                <div style="font-size: 0.8em; color: #888; text-transform: uppercase; margin-bottom: 5px;">Total Damage Dealt</div>
-                                <div style="font-size: 2em; font-weight: bold; color: #ff6666;">{{dossier.stats.totalDamage}}</div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Damage Dealt</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #ff6666;">{{dossier.stats.totalDamage}}</div>
                             </div>
-                            <div style="background: rgba(0,0,0,0.5); padding: 15px; border: 1px solid #333; border-radius: 4px; text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.8);">
-                                <div style="font-size: 0.8em; color: #888; text-transform: uppercase; margin-bottom: 5px;">Confirmed Kills</div>
-                                <div style="font-size: 2em; font-weight: bold; color: #ffaa00;">{{dossier.stats.kills}}</div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Kills</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #ffaa00;">{{dossier.stats.kills}}</div>
                             </div>
-                            <div style="background: rgba(0,0,0,0.5); padding: 15px; border: 1px solid #333; border-radius: 4px; text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.8);">
-                                <div style="font-size: 0.8em; color: #888; text-transform: uppercase; margin-bottom: 5px;">Damage Mitigated</div>
-                                <div style="font-size: 2em; font-weight: bold; color: #44aaff;">{{dossier.stats.mitigated}}</div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Mitigated</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #44aaff;">{{dossier.stats.mitigated}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Healing Done</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #44ff44;">{{dossier.stats.healing}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Average Pace</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #eee;">{{dossier.stats.pace}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Damage vs Mean</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: {{dossier.stats.skewColor}};">{{dossier.stats.skewStr}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Average d20</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #ffcc00;">{{dossier.stats.avgD20}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Best Action</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #44aaff;">{{dossier.stats.maxHit}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Hardest Hit Taken</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #ff6666;">{{dossier.stats.maxTaken}}</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Dodge Chance</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #44ffaa;">{{dossier.stats.dodgeChance}}%</div>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #333; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Resist Chance</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #aa44ff;">{{dossier.stats.resistChance}}%</div>
                             </div>
                         </div>
+
+                        {{#if (or dossier.stats.adv.providedCover dossier.stats.adv.taunts dossier.stats.adv.huntedShots dossier.stats.adv.surges)}}
+                        <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; padding: 15px; border: 1px solid #aa44ff; background: rgba(170, 68, 255, 0.05); border-radius: 4px;">
+                            {{#if dossier.stats.adv.providedCover}}
+                            <div style="flex: 1; min-width: 150px; text-align: center;">
+                                <div style="color: #888; font-size: 0.7em; text-transform: uppercase;"><i class="fas fa-shield-alt" style="color:#ffcc00;"></i> Always in the Way</div>
+                                <div style="color: #ffcc00; font-weight: bold; font-size: 1.2em;">{{dossier.stats.adv.providedCover}} <span style="font-size: 0.6em; color: #aaa;">Interrupts</span></div>
+                                <div style="font-size: 0.7em; color: #777;">(<span style="color:#ff6666;">{{dossier.stats.adv.intEnemy}} Enemy</span> / <span style="color:#44aaff;">{{dossier.stats.adv.intFriendly}} Friendly</span>)</div>
+                            </div>
+                            {{/if}}
+                            {{#if dossier.stats.adv.taunts}}
+                            <div style="flex: 1; min-width: 150px; text-align: center;">
+                                <div style="color: #888; font-size: 0.7em; text-transform: uppercase;"><i class="fas fa-bullhorn" style="color:#44aaff;"></i> Taunts Used</div>
+                                <div style="color: #44aaff; font-weight: bold; font-size: 1.2em;">{{dossier.stats.adv.taunts}} <span style="font-size: 0.6em; color: #aaa;">({{dossier.stats.adv.tauntTriggers}} Trig)</span></div>
+                            </div>
+                            {{/if}}
+                            {{#if dossier.stats.adv.huntedShots}}
+                            <div style="flex: 1; min-width: 150px; text-align: center;">
+                                <div style="color: #888; font-size: 0.7em; text-transform: uppercase;"><i class="fas fa-crosshairs" style="color:#ffaa00;"></i> Apex Hunter</div>
+                                <div style="color: #ffaa00; font-weight: bold; font-size: 1.2em;">{{dossier.stats.adv.huntedShots}} <span style="font-size: 0.6em; color: #aaa;">({{dossier.stats.adv.huntedShotDmg}} DMG)</span></div>
+                            </div>
+                            {{/if}}
+                            {{#if dossier.stats.adv.surges}}
+                            <div style="flex: 1; min-width: 150px; text-align: center;">
+                                <div style="color: #888; font-size: 0.7em; text-transform: uppercase;"><i class="fas fa-magic" style="color:#aa44ff;"></i> Wellspring Surges</div>
+                                <div style="color: #aa44ff; font-weight: bold; font-size: 1.2em;">{{dossier.stats.adv.surges}} <span style="font-size: 0.6em; color: #aaa;">({{dossier.stats.adv.surgeFriendlyDmg}} FF)</span></div>
+                            </div>
+                            {{/if}}
+                        </div>
+                        {{/if}}
 
                         <h3 style="color: #ccc; margin-bottom: 10px; font-size: 1.1em;"><i class="fas fa-history"></i> Deployment History</h3>
                         <div style="max-height: 400px; overflow-y: auto; padding-right: 5px;">
                             {{#each dossier.encounters}}
-                                <div style="background: rgba(20,20,25,0.9); border-left: 3px solid {{#if isParty}}#44aaff{{else}}#ff4444{{/if}}; border-radius: 0 4px 4px 0; margin-bottom: 8px; padding: 10px 15px; display: flex; justify-content: space-between; align-items: center;">
-                                    <div style="flex: 1;">
-                                        <div style="font-weight: bold; color: #eee; font-size: 1.05em; margin-bottom: 3px;">{{encName}}</div>
-                                        <div style="color: #888; font-size: 0.75em; text-transform: uppercase;">{{dbType}}</div>
+                                <details style="background: rgba(20,20,25,0.9); border-left: 3px solid {{#if isParty}}#44aaff{{else}}#ff4444{{/if}}; border-radius: 0 4px 4px 0; margin-bottom: 8px;">
+                                    <summary style="padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; outline: none; list-style: none;">
+                                        <div style="flex: 1; display: flex; align-items: center; gap: 8px;">
+                                            <i class="fas fa-caret-right disclosure-arrow" style="color: #888;"></i>
+                                            <div>
+                                                <div style="font-weight: bold; color: #eee; font-size: 1.05em; margin-bottom: 3px;">{{encName}}</div>
+                                                <div style="color: #888; font-size: 0.75em; text-transform: uppercase;">{{dbType}}</div>
+                                            </div>
+                                        </div>
+                                        <div style="display: flex; gap: 20px; font-size: 0.9em; color: #bbb; text-align: right; align-items: center;">
+                                            <span title="Total Combat Time"><i class="far fa-clock" style="color: #aaa;"></i> {{durationStr}}</span>
+                                            <span title="Damage Dealt"><i class="fas fa-crosshairs" style="color: #ff6666;"></i> {{damageDealt}}</span>
+                                            <span title="Damage Mitigated"><i class="fas fa-shield-alt" style="color: #44aaff;"></i> {{mitigated}}</span>
+                                            <span title="Kills"><i class="fas fa-skull" style="color: #ffaa00;"></i> {{kills}}</span>
+                                            <span title="Average d20 Roll"><i class="fas fa-dice-d20" style="color: #44ffaa;"></i> {{avgD20}}</span>
+                                        </div>
+                                    </summary>
+                                    
+                                    <div style="padding: 15px; border-top: 1px dashed #444; background: rgba(10,10,15,0.95); display: flex; flex-direction: column; gap: 15px;">
+                                        
+                                        <div style="background: rgba(0,0,0,0.3); border: 1px solid #333; padding: 10px; border-radius: 4px; font-size: 0.85em;">
+                                            <div style="color: #aaa; text-transform: uppercase; font-weight: bold; margin-bottom: 5px; border-bottom: 1px dashed #444; padding-bottom: 3px;"><i class="fas fa-users"></i> Combatants Present</div>
+                                            <div style="margin-bottom: 3px;"><b style="color: #44aaff;">Allies:</b> <span style="color: #ccc;">{{otherPartyStr}}</span></div>
+                                            <div><b style="color: #ff6666;">Enemies:</b> <span style="color: #ccc;">{{otherEnemiesStr}}</span></div>
+                                        </div>
+
+                                        <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-around; text-align: center; margin-bottom: 5px;">
+                                            <div style="flex: 1;"><div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Best Hit</div><div style="color: #44aaff; font-weight: bold;">{{eMaxDmg}} DMG</div></div>
+                                            <div style="flex: 1; border-left: 1px solid #333;"><div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Hardest Hit Taken</div><div style="color: #ff6666; font-weight: bold;">{{eMaxTaken}} DMG</div></div>
+                                            <div style="flex: 1; border-left: 1px solid #333;"><div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Dodge</div><div style="color: #44ffaa; font-weight: bold;">{{eDodge}}%</div></div>
+                                            <div style="flex: 1; border-left: 1px solid #333;"><div style="font-size: 0.7em; color: #888; text-transform: uppercase;">Resist</div><div style="color: #aa44ff; font-weight: bold;">{{eResist}}%</div></div>
+                                        </div>
+
+                                        <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                                            {{#if targetsDamaged.length}}
+                                            <div style="flex: 1; min-width: 200px; background: rgba(255,102,102,0.05); border: 1px solid #442222; border-radius: 4px; padding: 10px;">
+                                                <div style="color: #ff6666; font-size: 0.8em; text-transform: uppercase; font-weight: bold; margin-bottom: 8px; border-bottom: 1px dashed #442222; padding-bottom: 4px;">Damage Breakdown (Offense)</div>
+                                                {{#each targetsDamaged}}
+                                                    <div style="margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 4px;">
+                                                        <div style="display: flex; justify-content: space-between; font-size: 0.9em; color: #eee; font-weight: bold; margin-bottom: 4px;">
+                                                            <span>{{name}}</span><span style="color: #ff6666;">{{amount}} DMG</span>
+                                                        </div>
+                                                        {{#each actions}}
+                                                            <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #888; padding-left: 10px;">
+                                                                <span>↳ {{name}}</span><span>{{amount}}</span>
+                                                            </div>
+                                                        {{/each}}
+                                                    </div>
+                                                {{/each}}
+                                            </div>
+                                            {{/if}}
+
+                                            {{#if attackers.length}}
+                                            <div style="flex: 1; min-width: 200px; background: rgba(68,170,255,0.05); border: 1px solid #223344; border-radius: 4px; padding: 10px;">
+                                                <div style="color: #44aaff; font-size: 0.8em; text-transform: uppercase; font-weight: bold; margin-bottom: 8px; border-bottom: 1px dashed #223344; padding-bottom: 4px;">Damage Breakdown (Defense)</div>
+                                                {{#each attackers}}
+                                                    <div style="margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 4px;">
+                                                        <div style="display: flex; justify-content: space-between; font-size: 0.9em; color: #eee; font-weight: bold; margin-bottom: 4px;">
+                                                            <span>{{name}}</span><span style="color: #44aaff;">{{amount}} DMG</span>
+                                                        </div>
+                                                        {{#each actions}}
+                                                            <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #888; padding-left: 10px;">
+                                                                <span>↳ {{name}}</span><span>{{amount}}</span>
+                                                            </div>
+                                                        {{/each}}
+                                                    </div>
+                                                {{/each}}
+                                            </div>
+                                            {{/if}}
+                                        </div>
+
+                                        {{#if (or advanced.providedCover advanced.taunts advanced.huntedShots advanced.surges)}}
+                                        <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                                            {{#if advanced.providedCover}}
+                                            <div style="background: rgba(0,0,0,0.5); border: 1px solid #555; padding: 8px 12px; border-radius: 4px; flex: 1; min-width: 120px; text-align: center;">
+                                                <div style="color: #888; font-size: 0.7em; text-transform: uppercase;">Always in the Way</div>
+                                                <div style="color: #ffcc00; font-weight: bold; font-size: 1.1em;">{{advanced.providedCover}} <span style="font-size: 0.6em; color: #aaa;">Interrupts</span></div>
+                                                <div style="font-size: 0.7em; color: #777;">(<span style="color:#ff6666;">{{advanced.interruptedEnemy}} E</span> / <span style="color:#44aaff;">{{advanced.interruptedFriendly}} F</span>)</div>
+                                            </div>
+                                            {{/if}}
+                                            {{#if advanced.taunts}}
+                                            <div style="background: rgba(0,0,0,0.5); border: 1px solid #555; padding: 8px 12px; border-radius: 4px; flex: 1; min-width: 120px; text-align: center;">
+                                                <div style="color: #888; font-size: 0.7em; text-transform: uppercase;">Taunts Used</div>
+                                                <div style="color: #44aaff; font-weight: bold; font-size: 1.1em;">{{advanced.taunts}} <span style="font-size: 0.6em; color: #aaa;">({{advanced.tauntTriggers}} Trig)</span></div>
+                                            </div>
+                                            {{/if}}
+                                            {{#if advanced.huntedShots}}
+                                            <div style="background: rgba(0,0,0,0.5); border: 1px solid #555; padding: 8px 12px; border-radius: 4px; flex: 1; min-width: 120px; text-align: center;">
+                                                <div style="color: #888; font-size: 0.7em; text-transform: uppercase;">Hunted Shots</div>
+                                                <div style="color: #ffaa00; font-weight: bold; font-size: 1.1em;">{{advanced.huntedShots}} <span style="font-size: 0.6em; color: #aaa;">({{advanced.huntedShotDmg}} DMG)</span></div>
+                                            </div>
+                                            {{/if}}
+                                            {{#if advanced.surges}}
+                                            <div style="background: rgba(0,0,0,0.5); border: 1px solid #555; padding: 8px 12px; border-radius: 4px; flex: 1; min-width: 120px; text-align: center;">
+                                                <div style="color: #888; font-size: 0.7em; text-transform: uppercase;">Wellspring Surges</div>
+                                                <div style="color: #aa44ff; font-weight: bold; font-size: 1.1em;">{{advanced.surges}} <span style="font-size: 0.6em; color: #aaa;">({{advanced.surgeFriendlyDmg}} FF)</span></div>
+                                            </div>
+                                            {{/if}}
+                                        </div>
+                                        {{/if}}
                                     </div>
-                                    <div style="display: flex; gap: 20px; font-size: 0.9em; color: #bbb; text-align: right;">
-                                        <span title="Damage Dealt"><i class="fas fa-crosshairs" style="color: #ff6666;"></i> {{damageDealt}}</span>
-                                        <span title="Damage Mitigated"><i class="fas fa-shield-alt" style="color: #44aaff;"></i> {{mitigated}}</span>
-                                        <span title="Kills"><i class="fas fa-skull" style="color: #ffaa00;"></i> {{kills}}</span>
-                                        <span title="Average d20 Roll"><i class="fas fa-dice-d20" style="color: #44ffaa;"></i> {{avgD20}}</span>
-                                    </div>
-                                </div>
+                                </details>
                             {{/each}}
                         </div>
                     {{/if}}
                 </div>
             {{/if}}
+               
 
         {{else}}
             <div style="text-align: center; color: #888; padding: 40px; font-style: italic;">
