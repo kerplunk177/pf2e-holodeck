@@ -195,7 +195,10 @@ window.CombatParser = {
             let stats = activeLedger.actors[resolvedOwner];
 
             if (stats) {
-                if (lowerFull.includes("hunted shot fused damage") || lowerFull.includes("hunted shot: fused damage")) stats.advanced.huntedShots++;
+                const isActionCard = context.type === "action" || message.item;
+                if (isActionCard && (lowerFull.includes("hunted shot") || message.item?.name?.toLowerCase().includes("hunted shot"))) {
+                    stats.advanced.huntedShots++;
+                }
                 if (lowerFull.includes("guardian's taunt")) stats.advanced.taunts++;
                 if (lowerFull.includes("wellspring surge")) stats.advanced.surges++;
             }
@@ -326,8 +329,10 @@ window.CombatParser = {
              
                 let hasSolidOrigin = false;
                 let originUuid = systemFlags.origin?.uuid || message.flags["aoe-easy-resolve"]?.origin;
+                let originDoc = null;
+                
                 if (originUuid) {
-                    let originDoc = fromUuidSync(originUuid);
+                    originDoc = fromUuidSync(originUuid);
                     if (originDoc) {
                         let actualActor = originDoc.actor || originDoc.parent || originDoc;
                         if (actualActor && actualActor.name) {
@@ -344,25 +349,37 @@ window.CombatParser = {
                     }
                 }
 
-                // --- NEW: INTERCEPT CONDITIONS TO PREVENT MISATTRIBUTION ---
+                // --- DEFINITIVE INTERCEPTOR BLOCK ---
                 let flavorText = message.flavor || message.item?.name || fullText;
+                let rollOptions = systemFlags.context?.options || [];
                 
-                // 1. Lock down Fast Healing / Regen so it doesn't attach to the previous weapon
-                if (flavorText.toLowerCase().includes("fast healing") || flavorText.toLowerCase().includes("regeneration")) {
+                // Mine the backend tags you found in the inspector
+                let isTaggedFastHealing = rollOptions.some(o => o.includes("fast-healing") || o.includes("negative-healing") || o.includes("regeneration"));
+                let isTaggedPersistent = rollOptions.some(o => o.includes("persistent-damage") || o.includes("bleed"));
+
+                let textImpliesFastHealing = isTaggedFastHealing || flavorText.toLowerCase().includes("fast healing") || flavorText.toLowerCase().includes("regeneration");
+                let textImpliesPersistent = isTaggedPersistent || flavorText.toLowerCase().includes("persistent damage") || actionNameResolved.toLowerCase().includes("persistent damage") || lowerFull.includes("persistent damage");
+
+                if (textImpliesFastHealing) {
                     attackerName = targetName;
                     actionNameResolved = flavorText.toLowerCase().includes("regeneration") ? "Regeneration" : "Fast Healing";
-                    hasSolidOrigin = true; 
+                    hasSolidOrigin = true; // Kills the fallback loop
+                } 
+                else if (textImpliesPersistent) {
+                    attackerName = "Environment";
+                    actionNameResolved = "Persistent Damage";
+                    hasSolidOrigin = true; // Kills the fallback loop
                 }
-                // 2. Punt Persistent Damage to the Environment so it leaves PC output profiles
-                else if (flavorText.toLowerCase().includes("persistent damage") || actionNameResolved.toLowerCase().includes("persistent damage") || lowerFull.includes("persistent damage")) {
-                    attackerName = "Environment"; 
-                    hasSolidOrigin = true; 
-                }
-                // 3. Lock down self-heals (like Potions) so they don't trigger the fallback loop
-                else if (isHealing && attackerName === targetName) {
-                    hasSolidOrigin = true;
+                else if (isHealing) {
+                    // If it's a heal but the origin is a weapon (e.g. clicking Undo Damage) OR no origin exists
+                    if (!hasSolidOrigin || originDoc?.type === "weapon" || originDoc?.type === "melee") {
+                        attackerName = targetName;
+                        actionNameResolved = (flavorText.toLowerCase().includes("potion") || flavorText.toLowerCase().includes("elixir")) ? "Consumable Healing" : "Passive / Self Healing";
+                        hasSolidOrigin = true;
+                    }
                 }
 
+                // --- THE FALLBACK LOOP ---
                 if (!hasSolidOrigin && (attackerName === "Unknown Source" || attackerName === targetName)) {
                     for (let i = activeLedger.masterLog.length - 1; i >= 0; i--) {
                         let prev = activeLedger.masterLog[i];
