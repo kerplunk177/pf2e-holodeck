@@ -538,9 +538,10 @@
                                             <td style="padding: 6px; color: #777;">{{round}}</td>
                                             <td style="padding: 6px; color: #aaa;">{{target}}</td>
                                             <td style="padding: 6px; color: #ddd;">{{name}}</td>
-                                            <td style="padding: 6px; text-align: right; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">
+                                      <td style="padding: 6px; text-align: right; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">
                                                 {{{result}}}
                                                 {{#if ../../canAudit}}
+                                                    <input type="checkbox" class="mass-audit-cb-main" value="{{id}}" style="margin-left: 8px; cursor: pointer; vertical-align: middle;" title="Select for Mass Audit">
                                                     <a data-action="reassignLog" data-log-id="{{id}}" style="color: #44aaff; cursor: pointer; margin-left: 8px;" title="Audit / Reassign Action"><i class="fas fa-edit"></i></a>
                                                     <a data-action="deleteLog" data-log-id="{{id}}" style="color: #ff4444; cursor: pointer; margin-left: 8px;" title="Delete Log"><i class="fas fa-trash"></i></a>
                                                 {{/if}}
@@ -767,9 +768,10 @@
                                             <td style="padding: 6px; color: #777;">{{round}}</td>
                                             <td style="padding: 6px; color: #aaa;">{{target}}</td>
                                             <td style="padding: 6px; color: #ddd;">{{name}}</td>
-                                            <td style="padding: 6px; text-align: right; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">
+                                          <td style="padding: 6px; text-align: right; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">
                                                 {{{result}}}
                                                 {{#if ../../canAudit}}
+                                                    <input type="checkbox" class="mass-audit-cb-main" value="{{id}}" style="margin-left: 8px; cursor: pointer; vertical-align: middle;" title="Select for Mass Audit">
                                                     <a data-action="reassignLog" data-log-id="{{id}}" style="color: #44aaff; cursor: pointer; margin-left: 8px;" title="Audit / Reassign Action"><i class="fas fa-edit"></i></a>
                                                     <a data-action="deleteLog" data-log-id="{{id}}" style="color: #ff4444; cursor: pointer; margin-left: 8px;" title="Delete Log"><i class="fas fa-trash"></i></a>
                                                 {{/if}}
@@ -811,9 +813,10 @@
                                         <div style="flex: 0 0 10%; color: #777;">{{round}}</div>
                                         <div style="flex: 0 0 25%; color: #44aaff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{source}}</div>
                                         <div style="flex: 0 0 25%; color: {{#if (eq target 'None')}}#888{{else}}#ff6666{{/if}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{target}}</div>
-                                        <div style="flex: 1; text-align: right; font-weight: bold; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">
+                                      <div style="flex: 1; text-align: right; font-weight: bold; color: {{#if (eq type 'Damage')}}#ff6666{{else if (eq type 'Heal')}}#44ff44{{else}}#ffcc00{{/if}};">
                                             {{{result}}}
                                             {{#if ../../canAudit}}
+                                                <input type="checkbox" class="mass-audit-cb-main" value="{{id}}" style="margin-left: 8px; cursor: pointer; vertical-align: middle;" onclick="event.stopPropagation();" title="Select for Mass Audit">
                                                 <a data-action="reassignLog" data-log-id="{{id}}" style="color: #44aaff; cursor: pointer; margin-left: 8px;" title="Audit / Reassign Action"><i class="fas fa-edit"></i></a>
                                                 <a data-action="deleteLog" data-log-id="{{id}}" style="color: #ff4444; cursor: pointer; margin-left: 8px;" title="Delete Log"><i class="fas fa-trash"></i></a>
                                             {{/if}}
