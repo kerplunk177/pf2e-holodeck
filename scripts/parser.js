@@ -196,7 +196,10 @@ window.CombatParser = {
 
             if (stats) {
                 const actionCheckText = (fullText + " " + (message.item?.name || "")).toLowerCase();
-                if (context.type === "action" && actionCheckText.includes("hunted shot")) {
+                const earlyRollOptions = context.options || [];
+
+                if ((context.type === "action" && actionCheckText.includes("hunted shot")) || 
+                    (context.type === "attack-roll" && earlyRollOptions.includes("hunted-shot-lead"))) {
                     stats.advanced.huntedShots++;
                 }
                 if (actionCheckText.includes("guardian's taunt")) stats.advanced.taunts++;
@@ -216,7 +219,6 @@ window.CombatParser = {
                    const obsName = typeof obs === 'string' ? obs : obs.name;
                    const isFriendlyShot = obs.isFriendlyFire ?? false;
 
-                   // Bulletproof actor initialization
                    if (!activeLedger.actors[obsName]) {
                        activeLedger.actors[obsName] = {
                            name: obsName, type: "npc", level: 0, isAlly: false, master: null,
@@ -231,7 +233,6 @@ window.CombatParser = {
                    let obsStats = activeLedger.actors[obsName];
                    obsStats.advanced = obsStats.advanced || {};
                    
-                   // Route the stat to the correct team
                    if (isFriendlyShot) {
                        obsStats.advanced.interruptedFriendly = (obsStats.advanced.interruptedFriendly || 0) + 1;
                    } else {
@@ -248,7 +249,8 @@ window.CombatParser = {
 
        
             const isBaseCard = context.type === "spell-cast" || context.type === "action" || context.type === "spell-effect";
-            if (isBaseCard && !hasAoEPayload) return;
+            // VETO FIX: Modules like AOE Easy Resolve embed the damage roll directly into the spell cast card.
+            if (isBaseCard && !hasAoEPayload && !message.isDamageRoll && !(message.rolls && message.rolls.length > 0)) return;
 
             const isStandardItemCard = message.flags?.pf2e?.context?.type === "item-chat" || (!message.flags?.pf2e?.context?.type && message.item);
             const isNarrative = !isStandardItemCard && (/(?:takes|taking|applied|healed|restored|reduced by|mitigated|recovered)[^\d]*\d+/i.test(fullText) || /(?:unscathed|completely absorbing|guardian's taunt|wellspring surge|taunt penalty|hunted shot)/i.test(fullText));
@@ -308,15 +310,22 @@ window.CombatParser = {
 
                 if (context.target?.token) {
                     let tDoc = fromUuidSync(context.target.token);
-                    if (tDoc) { targetName = tDoc.name || tDoc.parent?.name || "None"; targetDoc = tDoc.actor || tDoc; }
+                    if (tDoc) { 
+                        targetDoc = tDoc.actor || tDoc; 
+                        targetName = tDoc.name || "None"; 
+                    }
                 } 
                 if (targetName === "None" && systemFlags.appliedDamage?.uuid) {
-                    targetDoc = fromUuidSync(systemFlags.appliedDamage.uuid);
-                    if (targetDoc) targetName = targetDoc.parent?.name || targetDoc.name;
+                    let fetchedDoc = fromUuidSync(systemFlags.appliedDamage.uuid);
+                    if (fetchedDoc) {
+                        targetDoc = fetchedDoc.actor || fetchedDoc;
+                        targetName = fetchedDoc.name || "None";
+                    }
                 } 
-              // Fix Target Resolution: Only default to self if it is actually healing.
-                // This stops attackers from defaulting to hitting themselves with damage.
-                if (targetName === "None" && message.speaker?.alias && isHealing) {
+                
+                // Fix Target Resolution: Reverted the strict `&& isHealing` restriction.
+                // We aggressively block AOE payloads from using the speaker fallback to prevent massive self-harm misattribution.
+                if (targetName === "None" && message.speaker?.alias && !hasAoEPayload) {
                     targetName = message.speaker.alias;
                     targetDoc = message.actor;
                 }
@@ -355,7 +364,6 @@ window.CombatParser = {
                 let rollOptions = systemFlags.context?.options || [];
 
                 if (isHealing) {
-                    // Only check for healing tags if the target is actually gaining HP
                     let isTaggedFastHealing = rollOptions.some(o => o.includes("fast-healing") || o.includes("negative-healing") || o.includes("regeneration"));
                     let textImpliesFastHealing = isTaggedFastHealing || flavorText.toLowerCase().includes("fast healing") || flavorText.toLowerCase().includes("regeneration");
 
@@ -364,24 +372,29 @@ window.CombatParser = {
                         actionNameResolved = flavorText.toLowerCase().includes("regeneration") ? "Regeneration" : "Fast Healing";
                         hasSolidOrigin = true; 
                     } else if (!hasSolidOrigin || originDoc?.type === "weapon" || originDoc?.type === "melee") {
-                        // Catches manual undo-heals from damage cards and potions
                         attackerName = targetName;
                         actionNameResolved = (flavorText.toLowerCase().includes("potion") || flavorText.toLowerCase().includes("elixir")) ? "Consumable Healing" : "Passive / Self Healing";
                         hasSolidOrigin = true; 
                     }
                 } else {
-                    // We are dealing DAMAGE. Look for persistent bleeds, ignore healing tags.
-                    let isTaggedPersistent = rollOptions.some(o => o.includes("persistent-damage") || o.includes("bleed"));
-                    let textImpliesPersistent = isTaggedPersistent || flavorText.toLowerCase().includes("persistent damage") || actionNameResolved.toLowerCase().includes("persistent damage") || lowerFull.includes("persistent damage");
+                    let textImpliesPersistent = flavorText.toLowerCase().includes("persistent damage") || 
+                    actionNameResolved.toLowerCase().includes("persistent damage") || 
+                    (context.type === "persistent-damage");
 
                     if (textImpliesPersistent) {
-                        attackerName = "Environment";
-                        actionNameResolved = "Persistent Damage";
-                        hasSolidOrigin = true; 
+                        // Only rename the action if it lacks a specific feature name from the system
+                        if (actionNameResolved === "Unknown Action" || actionNameResolved.toLowerCase().includes("persistent damage")) {
+                            actionNameResolved = "Persistent Damage";
+                        }
+                    
+                        // We drop the self-harm check. If the Barbarian rots themselves, they get the stat!
+                        if (!hasSolidOrigin || attackerName === "Unknown Source") {
+                            attackerName = "Environment";
+                            hasSolidOrigin = true; 
+                        }
                     }
                 }
 
-                // Fallback loop (Will only fire on Damage when origin is truly unknown)
                 if (!hasSolidOrigin && (attackerName === "Unknown Source" || attackerName === targetName)) {
                     for (let i = activeLedger.masterLog.length - 1; i >= 0; i--) {
                         let prev = activeLedger.masterLog[i];
@@ -409,7 +422,6 @@ window.CombatParser = {
                 if (/(?:unscathed|completely absorbing)/i.test(fullText)) valueTotal = 0;
                 if (valueTotal === 0 && !/(?:unscathed|completely absorbing)/i.test(fullText)) return;
 
-                // --- BULLETPROOF ATTACKER CREATION ---
                 let aMaster = this.getMasterName(attackerDoc, attackerName);
                 let aAlly = attackerName === resolvedOwner ? stats?.isAlly : false;
                 if (aMaster && !aAlly) {
@@ -440,7 +452,6 @@ window.CombatParser = {
                 let mitMatch;
                 while ((mitMatch = mitRegex.exec(fullText)) !== null) mitigatedTotal += parseInt(mitMatch[1]);
 
-                // --- BULLETPROOF TARGET CREATION ---
                 if (targetName !== "None") {
                     let targetMaster = this.getMasterName(targetDoc, targetName); 
                     let tAlly = targetDoc ? checkIsAlly(targetDoc) : false;
@@ -627,19 +638,11 @@ window.CombatParser = {
                 if (context.target?.token) {
                     let tDoc = fromUuidSync(context.target.token);
                     if (tDoc) {
-                        targetName = tDoc.name || tDoc.parent?.name || "None";
                         targetDoc = tDoc.actor || tDoc;
+                        targetName = tDoc.name || "None";
                     }
                 }
                 
-                if (targetName === "None" && game.user.targets.size > 0) {
-                    let t = Array.from(game.user.targets)[0];
-                    if (t) {
-                        targetName = t.name;
-                        targetDoc = t.actor;
-                    }
-                }
-
                 if (targetName === "None") {
                     let match = fullText.match(/target:\s*([^|]+)/i) || (message.flavor && message.flavor.match(/target:\s*([^|]+)/i));
                     if (match) {
@@ -665,12 +668,10 @@ window.CombatParser = {
                 if (isFail) stats.misses++;
                 if (isCritFail) stats.critMisses++;
 
-   
-                // RESTORED: Target tracking for incoming attacks
                 if (isAttack && targetName !== "None") {
                     let targetMaster = this.getMasterName(targetDoc, targetName);
                     let tAlly = targetDoc ? checkIsAlly(targetDoc) : false;
-                    let targetLevel = targetDoc ? getActorLevel(targetDoc) : 0; // <--- THE FIX
+                    let targetLevel = targetDoc ? getActorLevel(targetDoc) : 0; 
 
                     if (!activeLedger.actors[targetName]) {
                         activeLedger.actors[targetName] = {
@@ -815,9 +816,13 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 if (targetLedger && targetLedger.actors[actorName]) {
                     targetLedger.actors[actorName].isAlly = !targetLedger.actors[actorName].isAlly;
                     if (dbName) {
-                        let db = game.settings.get('pf2e-holodeck', dbName);
+                        let db = game.settings.get('pf2e-holodeck', dbName) || {};
                         db[encName] = targetLedger;
-                        await game.settings.set('pf2e-holodeck', dbName, db);
+                        
+                        // THE LAG DESTROYER
+                        let doc = game.settings.storage.get("world").find(s => s.key === `pf2e-holodeck.${dbName}`);
+                        if (doc) await doc.update({ value: db }, { diff: false });
+                        else await game.settings.set('pf2e-holodeck', dbName, db);
                     }
                     this.expandedActors[actorName] = true;
                     this.render({ force: true });
@@ -930,7 +935,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 
                 if (confirm.round > (targetLedger.maxRounds || 1)) targetLedger.maxRounds = confirm.round;
 
-                // Safely ensure the actors exist in case they somehow got deleted
                 const initActor = (aName) => {
                     if (!aName || aName === "None" || aName === "Environment" || aName === "Unknown") return;
                     if (!targetLedger.actors[aName]) {
@@ -948,7 +952,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 initActor(confirm.source);
                 initActor(confirm.target);
 
-                // Wire up Source Stats
                 if (confirm.source !== "Environment" && confirm.source !== "Unknown") {
                     let sStats = targetLedger.actors[confirm.source];
                     if (confirm.type === "Damage") sStats.damageDealt += confirm.value;
@@ -958,7 +961,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     sStats.history.push(newLog);
                 }
 
-                // Wire up Target Threat Profile Stats
                 if (confirm.target !== "None") {
                     let tStats = targetLedger.actors[confirm.target];
                     let cleanAction = confirm.name;
@@ -974,24 +976,25 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     }
                 }
 
-                // Append to Global Damage Total
                 if (confirm.type === "Damage") {
                     targetLedger.totalDamage = (targetLedger.totalDamage || 0) + confirm.value;
                 }
 
-                // Force Raw Database Overwrite
+                // THE LAG DESTROYER: Bypass diffObject entirely
                 const flatLedger = JSON.parse(JSON.stringify(targetLedger));
+                const saveFast = async (db, data) => {
+                    let doc = game.settings.storage.get("world").find(s => s.key === `pf2e-holodeck.${db}`);
+                    if (doc) await doc.update({ value: data }, { diff: false });
+                    else await game.settings.set('pf2e-holodeck', db, data);
+                };
 
                 if (dbName) {
                     let fullDb = game.settings.get('pf2e-holodeck', dbName) || {};
-                    let newDb = JSON.parse(JSON.stringify(fullDb));
-                    newDb[encName] = flatLedger;
-                    await game.settings.set('pf2e-holodeck', dbName, {}); 
-                    await game.settings.set('pf2e-holodeck', dbName, newDb);
+                    fullDb[encName] = flatLedger;
+                    await saveFast(dbName, fullDb);
                 } else if (encName === "current") {
                     window.CombatParser.ledger = flatLedger;
-                    await game.settings.set('pf2e-holodeck', 'activeTactical', {});
-                    await game.settings.set('pf2e-holodeck', 'activeTactical', flatLedger);
+                    await saveFast('activeTactical', flatLedger);
                 } else if (encName === "exploration") {
                     window.CombatParser.explorationLedger = flatLedger;
                 }
@@ -1033,7 +1036,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 
                 if (!confirm) return;
 
-                // 1. Clean up the Source Actor's Math
                 let sourceStats = targetLedger.actors[lEntry.source];
                 if (sourceStats) {
                     if (lEntry.type === "Damage" || lEntry.type === "Mitigation") {
@@ -1073,11 +1075,9 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                             }
                         }
                     }
-                    // Snip it out of their personal history
                     sourceStats.history = sourceStats.history.filter(h => h.id !== logId);
                 }
 
-                // 2. Clean up Target Threat Profiles
                 let tStats = targetLedger.actors[lEntry.target];
                 if (tStats && lEntry.name) {
                     let cleanAction = lEntry.name.split(/(?: - | \| )/)[0].trim();
@@ -1088,24 +1088,25 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     }
                 }
 
-                // 3. Subtract from Encounter Total
                 if (lEntry.type === "Damage") targetLedger.totalDamage = Math.max(0, targetLedger.totalDamage - (lEntry.damageVal || 0));
 
-                // 4. Snip from Master Log
                 targetLedger.masterLog.splice(logIndex, 1);
 
-                // 5. Force Raw Database Overwrite
+                // THE LAG DESTROYER: Bypass diffObject entirely
                 const flatLedger = JSON.parse(JSON.stringify(targetLedger));
+                const saveFast = async (db, data) => {
+                    let doc = game.settings.storage.get("world").find(s => s.key === `pf2e-holodeck.${db}`);
+                    if (doc) await doc.update({ value: data }, { diff: false });
+                    else await game.settings.set('pf2e-holodeck', db, data);
+                };
+
                 if (dbName) {
                     let fullDb = game.settings.get('pf2e-holodeck', dbName) || {};
-                    let newDb = JSON.parse(JSON.stringify(fullDb));
-                    newDb[encName] = flatLedger;
-                    await game.settings.set('pf2e-holodeck', dbName, {}); 
-                    await game.settings.set('pf2e-holodeck', dbName, newDb);
+                    fullDb[encName] = flatLedger;
+                    await saveFast(dbName, fullDb);
                 } else if (encName === "current") {
                     window.CombatParser.ledger = flatLedger;
-                    await game.settings.set('pf2e-holodeck', 'activeTactical', {});
-                    await game.settings.set('pf2e-holodeck', 'activeTactical', flatLedger);
+                    await saveFast('activeTactical', flatLedger);
                 } else if (encName === "exploration") {
                     window.CombatParser.explorationLedger = flatLedger;
                 }
@@ -1144,22 +1145,25 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 
                 if (!confirm) return;
 
+                const saveFast = async (db, data) => {
+                    let doc = game.settings.storage.get("world").find(s => s.key === `pf2e-holodeck.${db}`);
+                    if (doc) await doc.update({ value: data }, { diff: false });
+                    else await game.settings.set('pf2e-holodeck', db, data);
+                };
+
                 const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
                 const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
                 const sDb = game.settings.get('pf2e-holodeck', 'holodeckHistory') || {};
 
                 if (hDb[encName]) {
-                    let newDb = JSON.parse(JSON.stringify(hDb));
-                    delete newDb[encName];
-                    await game.settings.set('pf2e-holodeck', 'combatHistory', newDb);
+                    delete hDb[encName];
+                    await saveFast('combatHistory', hDb);
                 } else if (eDb[encName]) {
-                    let newDb = JSON.parse(JSON.stringify(eDb));
-                    delete newDb[encName];
-                    await game.settings.set('pf2e-holodeck', 'explorationHistory', newDb);
+                    delete eDb[encName];
+                    await saveFast('explorationHistory', eDb);
                 } else if (sDb[encName]) {
-                    let newDb = JSON.parse(JSON.stringify(sDb));
-                    delete newDb[encName];
-                    await game.settings.set('pf2e-holodeck', 'holodeckHistory', newDb);
+                    delete sDb[encName];
+                    await saveFast('holodeckHistory', sDb);
                 }
 
                 this.selectedEncounter = "exploration";
@@ -1172,23 +1176,21 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                 
                 const logId = target.dataset.logId;
                 
-                // --- BATCH SELECTION: Grab any checked boxes in the timeline ---
                 let selectedIds = [];
                 if (this.element) {
                     this.element.querySelectorAll('.mass-audit-cb-main:checked').forEach(cb => {
                         if (cb.value) selectedIds.push(cb.value);
                     });
                 }
-                // Always include the one you explicitly clicked the pencil on
                 if (logId && !selectedIds.includes(logId)) selectedIds.push(logId);
                 
                 if (selectedIds.length === 0) return ui.notifications.warn("Combat Forensics | No logs selected.");
-
+            
                 let targetLedger = this.selectedEncounter === "current" ? window.CombatParser.ledger :
                                    this.selectedEncounter === "exploration" ? window.CombatParser.explorationLedger : null;
                 let dbName = null;
                 let encName = this.selectedEncounter;
-
+            
                 if (!targetLedger) {
                     const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
                     const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
@@ -1197,15 +1199,14 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     else if (eDb[encName]) { targetLedger = eDb[encName]; dbName = 'explorationHistory'; }
                     else if (sDb[encName]) { targetLedger = sDb[encName]; dbName = 'holodeckHistory'; }
                 }
-
+            
                 if (!targetLedger) return;
-
-                // Base the dialog off the first selected log
+            
                 const logEntry = targetLedger.masterLog.find(l => l.id === selectedIds[0]);
                 if (!logEntry) return ui.notifications.warn("Combat Forensics | Log ID not found.");
-
+            
                 let currentLogCoreName = logEntry.name ? logEntry.name.split(/(?: - | \| )/)[0].trim() : "Unknown Action";
-
+            
                 let actorAbilities = {};
                 Object.entries(targetLedger.actors).forEach(([aName, aData]) => {
                     let abilities = new Set();
@@ -1217,19 +1218,20 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     });
                     actorAbilities[aName] = Array.from(abilities).sort();
                 });
-
-                let actorOptions = Object.keys(targetLedger.actors).map(name => `<option value="${name}" ${name === logEntry.source ? 'selected' : ''}>${name}</option>`).join("");
-                
-                // NEW: TARGET OPTIONS
-                let targetOptions = `<option value="None">None</option>`;
+            
+                let actorOptions = `<option value="KEEP_ORIGINAL" selected>-- Keep Original Source --</option>`;
                 Object.keys(targetLedger.actors).forEach(name => {
-                    targetOptions += `<option value="${name}" ${name === logEntry.target ? 'selected' : ''}>${name}</option>`;
+                    actorOptions += `<option value="${name}">${name}</option>`;
                 });
-
+                
+                let targetOptions = `<option value="KEEP_ORIGINAL" selected>-- Keep Original Target --</option>`;
+                Object.keys(targetLedger.actors).forEach(name => {
+                    targetOptions += `<option value="${name}">${name}</option>`;
+                });
+            
                 let otherLogsBySource = targetLedger.masterLog.filter(l => !l.isDivider && !l.isTurnSummary && l.source === logEntry.source && !selectedIds.includes(l.id) && l.name === logEntry.name);
                 let checklistHtml = "";
                 
-                // Only suggest identical actions if you didn't manually multi-select them already
                 if (otherLogsBySource.length > 0 && selectedIds.length === 1) { 
                     checklistHtml = `
                         <div style="margin-top: 15px; padding-top: 10px; border-top: 1px dashed #555;">
@@ -1255,7 +1257,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                         </div>
                     `;
                 }
-
+            
                 const content = `
                     <div style="background: #0f0f15; color: #eee; padding: 15px; border: 1px solid #444; border-radius: 4px; font-family: 'Signika', sans-serif;">
                         <form>
@@ -1279,13 +1281,13 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                             </div>
                             <div class="form-group" id="new-action-custom-container" style="margin-bottom: 10px; display: none;">
                                 <label style="font-weight: bold; color: #ffaa00; display:block; margin-bottom:4px;">Custom Action Name:</label>
-                                <input type="text" id="new-action-custom" value="${logEntry.name || 'Unknown Action'}" style="width: 100%; padding: 6px; background: #222; color: #eee; border: 1px solid #555; border-radius: 3px;">
+                                <input type="text" id="new-action-custom" value="" style="width: 100%; padding: 6px; background: #222; color: #eee; border: 1px solid #555; border-radius: 3px;">
                             </div>
                             ${checklistHtml}
                         </form>
                     </div>
                 `;
-
+            
                 const dialog = new foundry.applications.api.DialogV2({
                     window: { title: "Mass Audit Combat Record" },
                     position: { width: 500 },
@@ -1299,19 +1301,18 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                             default: true,
                             callback: async (ev, btn, dlg) => {
                                 const html = dlg.element;
-                                const newSource = html.querySelector('#new-actor-source').value;
-                                const newTarget = html.querySelector('#new-actor-target').value;
+                                const sourceSelection = html.querySelector('#new-actor-source').value;
+                                const targetSelection = html.querySelector('#new-actor-target').value;
                                 const actionSelection = html.querySelector('#new-action-select').value;
                                 const customName = html.querySelector('#new-action-custom').value;
-                                const newName = actionSelection === "Other" ? customName : actionSelection;
                                 
                                 html.querySelectorAll('.mass-audit-cb:checked').forEach(cb => {
                                     if (!selectedIds.includes(cb.value)) selectedIds.push(cb.value);
                                 });
-
-                                const transferLogStats = (oldStats, newStats, lEntry) => {
+            
+                                const transferLogStats = (oldStats, newStats, lEntry, appliedSource, appliedName) => {
                                     if (!oldStats || !newStats) return;
-
+            
                                     if (lEntry.type === "Damage" || lEntry.type === "Mitigation") {
                                         oldStats.damageDealt -= (lEntry.damageVal || 0);
                                         newStats.damageDealt += (lEntry.damageVal || 0);
@@ -1354,7 +1355,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                                         else if (res.includes("SUCCESS")) { oldStats.hits = Math.max(0, oldStats.hits - 1); newStats.hits++; }
                                         else if (res.includes("CRITICALFAILURE") || res.includes("CRITICAL FAILURE")) { oldStats.critMisses = Math.max(0, oldStats.critMisses - 1); newStats.critMisses++; }
                                         else if (res.includes("FAILURE")) { oldStats.misses = Math.max(0, oldStats.misses - 1); newStats.misses++; }
-
+            
                                         let d20Match = lEntry.detail ? lEntry.detail.match(/d20:\s*(\d+)/) : null;
                                         if (d20Match) {
                                             let d20Val = parseInt(d20Match[1]);
@@ -1367,43 +1368,47 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                                             }
                                         }
                                     }
-
+            
                                     oldStats.history = oldStats.history.filter(h => h.id !== lEntry.id);
                                     let clonedHistoryEntry = foundry.utils.deepClone(lEntry);
-                                    clonedHistoryEntry.source = newSource;
-                                    clonedHistoryEntry.name = newName;
+                                    clonedHistoryEntry.source = appliedSource;
+                                    clonedHistoryEntry.name = appliedName;
                                     clonedHistoryEntry.minion = null;
                                     newStats.history.push(clonedHistoryEntry);
                                 };
-
+            
                                 selectedIds.forEach(targetId => {
                                     let lEntry = targetLedger.masterLog.find(l => l.id === targetId);
                                     if (!lEntry) return;
-
+            
                                     let oldSource = lEntry.source;
                                     let oldTarget = lEntry.target;
                                     let oldName = lEntry.name ? lEntry.name.split(/(?: - | \| )/)[0].trim() : "Unknown Action";
-
+            
+                                    let applySource = sourceSelection === "KEEP_ORIGINAL" ? oldSource : sourceSelection;
+                                    let applyTarget = targetSelection === "KEEP_ORIGINAL" ? oldTarget : targetSelection;
+                                    let applyName = actionSelection === "KEEP_ORIGINAL" ? oldName : (actionSelection === "Other" ? customName : actionSelection);
+            
                                     this.expandedActors[oldSource] = true;
-                                    this.expandedActors[newSource] = true;
-
+                                    this.expandedActors[applySource] = true;
+            
                                     // --- 1. Swap Source Stats ---
-                                    if (oldSource !== newSource) {
-                                        transferLogStats(targetLedger.actors[oldSource], targetLedger.actors[newSource], lEntry);
+                                    if (oldSource !== applySource) {
+                                        transferLogStats(targetLedger.actors[oldSource], targetLedger.actors[applySource], lEntry, applySource, applyName);
                                     } else {
                                         let stats = targetLedger.actors[oldSource];
                                         if (stats) {
                                             let hist = stats.history.find(h => h.id === targetId);
                                             if (hist) {
-                                                hist.name = newName;
-                                                hist.target = newTarget;
+                                                hist.name = applyName;
+                                                hist.target = applyTarget;
                                                 hist.minion = null;
                                             }
                                         }
                                     }
-
+            
                                     // --- 2. Swap Target Stats (Threat Profiles) ---
-                                    if (oldTarget !== newTarget || oldSource !== newSource || oldName !== newName) {
+                                    if (oldTarget !== applyTarget || oldSource !== applySource || oldName !== applyName) {
                                         let oldTStats = targetLedger.actors[oldTarget];
                                         if (oldTStats) {
                                             if (lEntry.type === "Damage") {
@@ -1424,17 +1429,17 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                                                 }
                                             }
                                         }
-
-                                        let newTStats = targetLedger.actors[newTarget];
+            
+                                        let newTStats = targetLedger.actors[applyTarget];
                                         if (newTStats) {
                                             if (lEntry.type === "Damage") {
                                                 newTStats.damageTakenSources = newTStats.damageTakenSources || {};
-                                                newTStats.damageTakenSources[newSource] = newTStats.damageTakenSources[newSource] || {};
-                                                newTStats.damageTakenSources[newSource][newName] = (newTStats.damageTakenSources[newSource][newName] || 0) + (lEntry.damageVal || 0);
+                                                newTStats.damageTakenSources[applySource] = newTStats.damageTakenSources[applySource] || {};
+                                                newTStats.damageTakenSources[applySource][applyName] = (newTStats.damageTakenSources[applySource][applyName] || 0) + (lEntry.damageVal || 0);
                                             } else if (lEntry.type === "Heal") {
                                                 newTStats.healingReceivedSources = newTStats.healingReceivedSources || {};
-                                                newTStats.healingReceivedSources[newSource] = newTStats.healingReceivedSources[newSource] || {};
-                                                newTStats.healingReceivedSources[newSource][newName] = (newTStats.healingReceivedSources[newSource][newName] || 0) + (lEntry.healVal || 0);
+                                                newTStats.healingReceivedSources[applySource] = newTStats.healingReceivedSources[applySource] || {};
+                                                newTStats.healingReceivedSources[applySource][applyName] = (newTStats.healingReceivedSources[applySource][applyName] || 0) + (lEntry.healVal || 0);
                                             } else if (lEntry.type === "Attack" || lEntry.type === "Save") {
                                                 if (lEntry.type === "Attack") {
                                                     newTStats.incomingAttacks = (newTStats.incomingAttacks || 0) + 1;
@@ -1446,25 +1451,36 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                                             }
                                         }
                                     }
-
+            
                                     // --- 3. Finalize Master Log Edit ---
-                                    lEntry.source = newSource;
-                                    lEntry.target = newTarget;
-                                    lEntry.name = newName;
+                                    lEntry.source = applySource;
+                                    lEntry.target = applyTarget;
+                                    lEntry.name = applyName;
                                     lEntry.minion = null;
                                 });
+            
+                                // THE LAG DESTROYER: Bypass diffObject entirely
+                                const flatLedger = JSON.parse(JSON.stringify(targetLedger));
+                                const saveFast = async (db, data) => {
+                                    let doc = game.settings.storage.get("world").find(s => s.key === `pf2e-holodeck.${db}`);
+                                    if (doc) await doc.update({ value: data }, { diff: false });
+                                    else await game.settings.set('pf2e-holodeck', db, data);
+                                };
 
                                 if (dbName) {
-                                    let db = game.settings.get('pf2e-holodeck', dbName);
-                                    db[encName] = targetLedger;
-                                    await game.settings.set('pf2e-holodeck', dbName, db);
+                                    let fullDb = game.settings.get('pf2e-holodeck', dbName) || {};
+                                    fullDb[encName] = flatLedger;
+                                    await saveFast(dbName, fullDb);
+                                } else if (encName === "current") {
+                                    window.CombatParser.ledger = flatLedger;
+                                    await saveFast('activeTactical', flatLedger);
+                                } else if (encName === "exploration") {
+                                    window.CombatParser.explorationLedger = flatLedger;
                                 }
                                 
-                                // CAPTURE SCROLL STATE BEFORE RENDER
                                 this.saveScroll();
                                 this.render({ force: true });
                                 
-                                // Uncheck all boxes in the UI after render
                                 setTimeout(() => {
                                     if(this.element) {
                                         this.element.querySelectorAll('.mass-audit-cb-main').forEach(cb => cb.checked = false);
@@ -1475,32 +1491,36 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                         { action: "cancel", label: "Cancel", icon: "fa-solid fa-times" }
                     ]
                 });
-
+            
                 await dialog.render(true);
                 const html = dialog.element;
-
+            
                 const sourceSelect = html.querySelector('#new-actor-source');
                 const actionSelect = html.querySelector('#new-action-select');
                 const customContainer = html.querySelector('#new-action-custom-container');
                 const customInput = html.querySelector('#new-action-custom');
-
+            
                 const updateActionDropdown = () => {
                     const selectedActor = sourceSelect.value;
-                    const abilities = actorAbilities[selectedActor] || [];
-                    let options = abilities.map(a => `<option value="${a}" ${a === currentLogCoreName ? 'selected' : ''}>${a}</option>`).join("");
-                    options += `<option value="Other" ${!abilities.includes(currentLogCoreName) ? 'selected' : ''}>Other (Custom)...</option>`;
+                    let options = `<option value="KEEP_ORIGINAL" selected>-- Keep Original Action Name --</option>`;
+                    
+                    if (selectedActor !== "KEEP_ORIGINAL") {
+                        const abilities = actorAbilities[selectedActor] || [];
+                        options += abilities.map(a => `<option value="${a}">${a}</option>`).join("");
+                    }
+                    options += `<option value="Other">Other (Custom)...</option>`;
                     
                     actionSelect.innerHTML = options;
                     
                     if (actionSelect.value === "Other") {
                         customContainer.style.display = "block";
-                        customInput.value = currentLogCoreName;
+                        customInput.value = "";
                     } else {
                         customContainer.style.display = "none";
                         customInput.value = actionSelect.value;
                     }
                 };
-
+            
                 if (sourceSelect && actionSelect) {
                     sourceSelect.addEventListener('change', updateActionDropdown);
                     actionSelect.addEventListener('change', () => {
@@ -1514,7 +1534,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     });
                     updateActionDropdown();
                 }
-
+            
                 const masterCb = html.querySelector('#mass-audit-master');
                 if (masterCb) {
                     masterCb.addEventListener('change', (e) => {
@@ -2548,7 +2568,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     if (!master.minions) master.minions = [];
                     master.minions.push(p);
 
-           
+            
                     master.damageDealt += (p.damageDealt || 0);
                     master.healingDealt += (p.healingDealt || 0);
                     master.kills += (p.kills || 0);
@@ -2572,14 +2592,49 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
         processMinions(rawPcs, pcs);
         processMinions(rawNpcs, npcs);
 
-        pcs.forEach(p => {
-            p.damagePercent = Math.round((p.damageDealt / totalDamage) * 100) || 0;
-            p.dpr = Math.round(p.damageDealt / maxRounds) || 0;
+        // --- NEW: Calculate Historical DPR over the last 10 encounters ---
+        let historicalStats = {};
+        let validHistoryKeys = Object.keys(historyDb).reverse(); // Newest first
+
+        [...pcs, ...npcs].forEach(a => {
+            let pastDmg = 0;
+            let pastRounds = 0;
+            let encountersFound = 0;
+            
+            for (let i = 0; i < validHistoryKeys.length && encountersFound < 10; i++) {
+                let encName = validHistoryKeys[i];
+                if (encName === this.selectedEncounter) continue; // Skip current data
+                
+                let pastEnc = historyDb[encName];
+                if (pastEnc && pastEnc.actors && pastEnc.actors[a.name]) {
+                    pastDmg += (pastEnc.actors[a.name].damageDealt || 0);
+                    pastRounds += (pastEnc.maxRounds || 1);
+                    encountersFound++;
+                }
+            }
+            historicalStats[a.name] = pastRounds > 0 ? (pastDmg / pastRounds) : 0;
         });
-        npcs.forEach(p => {
+
+        const applyDprMath = (p) => {
             p.damagePercent = Math.round((p.damageDealt / totalDamage) * 100) || 0;
-            p.dpr = Math.round(p.damageDealt / maxRounds) || 0;
-        });
+            p.dpr = Math.round((p.damageDealt / maxRounds) * 10) / 10 || 0; // Added a decimal for precision
+            
+            let histDpr = historicalStats[p.name] || 0;
+            p.historicalDpr = Math.round(histDpr * 10) / 10;
+            
+            if (histDpr > 0) {
+                let delta = ((p.dpr / histDpr) - 1) * 100;
+                p.dprDelta = Math.round(delta);
+                p.dprDeltaStr = p.dprDelta >= 0 ? `+${p.dprDelta}%` : `${p.dprDelta}%`;
+                p.dprDeltaColor = p.dprDelta >= 0 ? "#44ff44" : "#ff6666";
+            } else {
+                p.dprDeltaStr = "N/A";
+                p.dprDeltaColor = "#888";
+            }
+        };
+
+        pcs.forEach(applyDprMath);
+        npcs.forEach(applyDprMath);
 
         pcs.sort((a, b) => b.damageDealt - a.damageDealt);
         npcs.sort((a, b) => b.damageDealt - a.damageDealt);
@@ -2755,7 +2810,7 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 
    _onRender(context, options) {
     super._onRender(context, options);
-    this.restoreScroll(); // <-- Instantly snaps you back to your exact scroll position
+    this.restoreScroll();
 
     const detailsElements = this.element.querySelectorAll('details');
         detailsElements.forEach(el => {
@@ -2774,7 +2829,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
             });
         }
 
-        // --- NEW DOSSIER SELECTOR ---
         const dossierSelector = this.element.querySelector('#dossier-actor-select');
         if (dossierSelector) {
             dossierSelector.addEventListener('change', (e) => {
@@ -2834,7 +2888,8 @@ Hooks.on('createChatMessage', (message) => {
 
  
     const isBaseCard = context.type === "spell-cast" || context.type === "action" || context.type === "spell-effect";
-    if (isBaseCard && !hasAoEPayload) return;
+    // VETO FIX: Modules like AOE Easy Resolve embed the damage roll directly into the spell cast card.
+    if (isBaseCard && !hasAoEPayload && !message.isDamageRoll && !(message.rolls && message.rolls.length > 0)) return;
 
     const isNarrative = /(?:takes|taking|applied|healed|restored|reduced by|mitigated|recovered)[^\d]*\d+/i.test(fullText) || /(?:unscathed|completely absorbing|guardian's taunt|wellspring surge|taunt penalty|hunted shot)/i.test(fullText);
 

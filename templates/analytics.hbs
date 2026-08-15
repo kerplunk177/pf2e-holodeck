@@ -293,7 +293,9 @@
                                     <span style="color: #fff;">{{totalChecks}} Checks</span> 
                                 {{else}}
                                     <span style="color: #aaa; font-size: 0.85em; margin-right: 12px; font-weight: normal;" title="Average Turn Length / Max Turn Length"><i class="far fa-clock"></i> {{avgTurnTimeStr}} <span style="color: #666;">/</span> {{maxTurnTimeStr}}</span>
-                                    <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span>
+                                    <span style="color: #fff;">{{damageDealt}} DMG</span> <span style="color: #888; font-size: 0.8em;">({{dpr}} DPR)</span> <span style="color: {{this.dprDeltaColor}}">
+    {{this.dprDeltaStr}} vs Past Mean ({{this.historicalDpr}} avg)
+</span>
                                     <span style="color: #ffaa00; margin-left: 5px; font-size: 0.9em;">[{{kills}}K / {{assists}}A]</span>
                                     {{#if healingDealt}}<span style="color: #44ff44; margin-left: 5px;">| {{healingDealt}} HEAL</span>{{/if}}
                                 {{/if}}
