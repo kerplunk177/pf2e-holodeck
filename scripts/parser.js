@@ -27,10 +27,18 @@ window.CombatParser = {
     },
 
     getMasterName: function(actorDoc, tokenAlias) {
+        // Standard PF2e Master Check
         if (actorDoc && actorDoc.flags?.pf2e?.master?.id) {
             let master = game.actors.get(actorDoc.flags.pf2e.master.id);
             if (master) return master.name;
         }
+        
+        // Custom Necromancer Thrall Check
+        if (actorDoc && actorDoc.flags?.['necromancer-thrall-helper']?.masterId) {
+            let necroMaster = game.actors.get(actorDoc.flags['necromancer-thrall-helper'].masterId);
+            if (necroMaster) return necroMaster.name;
+        }
+
         let checkName = tokenAlias || (actorDoc ? actorDoc.name : "");
         let match = checkName.match(/^(.+?)'s /i);
         if (match) {
@@ -255,8 +263,10 @@ window.CombatParser = {
             const isStandardItemCard = message.flags?.pf2e?.context?.type === "item-chat" || (!message.flags?.pf2e?.context?.type && message.item);
             const isNarrative = !isStandardItemCard && (/(?:takes|taking|applied|healed|restored|reduced by|mitigated|recovered)[^\d]*\d+/i.test(fullText) || /(?:unscathed|completely absorbing|guardian's taunt|wellspring surge|taunt penalty|hunted shot)/i.test(fullText));
 
+            const isAoESummary = lowerFull.includes("resolution summary") || lowerFull.includes("save summary");
+            
             let isSynergyTextOnly = false;
-            if (!isDamageTaken && !isAttack && !isSave && !isSkill && !isDamageRoll && !hasAppliedDamage && !isNarrative && !hasAoEPayload) {
+            if (!isDamageTaken && !isAttack && !isSave && !isSkill && !isDamageRoll && !hasAppliedDamage && !isNarrative && !hasAoEPayload && !isAoESummary) {
                 if (lowerFull.includes("guardian's taunt") || lowerFull.includes("taunt penalty triggered!") || lowerFull.includes("wellspring surge")) {
                     isSynergyTextOnly = true;
                 } else return; 
@@ -283,64 +293,36 @@ window.CombatParser = {
 
             if (isSynergyTextOnly) return;
 
+            // --- SPELL/ACTION TRACKING (Critical for AoE Fallback) ---
+            if (isBaseCard && !hasAoEPayload && !message.isDamageRoll && !(message.rolls && message.rolls.length > 0)) {
+                let currentRound = game.combat ? game.combat.round : 1;
+                if (currentRound > activeLedger.maxRounds) activeLedger.maxRounds = currentRound;
+                
+                let logEntry = {
+                    id: foundry.utils.randomID(), round: currentRound, source: resolvedOwner, target: "AoE / Zone",
+                    type: "Spell", name: actionName, result: "ACTIVATED", detail: "Ability or spell cast.", damageVal: 0, healVal: 0, tags: [], minion: minionName
+                };
+                if (stats) stats.history.push(logEntry);
+                activeLedger.masterLog.push(logEntry);
+                if (isCombatPhase) this.saveLiveBackup();
+                return;
+            }
+
             // --- DAMAGE APPLICATION PHASE ---
-            const isApplication = !isDamageRoll && !isAttack && !isSave && !isSkill && (isDamageTaken || hasAppliedDamage || isNarrative || hasAoEPayload);
+
+            // --- DAMAGE APPLICATION PHASE ---
+            const isApplication = !isDamageRoll && !isAttack && !isSave && !isSkill && (isDamageTaken || hasAppliedDamage || isNarrative || hasAoEPayload || isAoESummary);
 
             if (isApplication) {
-                const applied = systemFlags.appliedDamage;
-                
-                let aoeValue = null;
-                let isAoEHealing = false;
-                if (hasAoEPayload) {
-                     isAoEHealing = /(?:healed|restored|healing|recovered)/i.test(message.flags["aoe-easy-resolve"].damageTooltip || fullText);
-                     aoeValue = parseInt(message.flags["aoe-easy-resolve"].damageTotal);
-                }
-                
-                const isHealing = applied ? applied.isHealing === true : (isAoEHealing || /(?:healed|restored|healing|recovered)/i.test(fullText));
-
                 let attackerName = "Unknown Source";
                 let attackerType = "npc";
                 let attackerLevel = 0;
                 let attackerDoc = null; 
                 let actionNameResolved = actionName;
-                let targetName = "None";
-                let targetLevel = 0;
-                let targetDoc = null;
-                let inheritedMinion = minionName;
-
-                if (context.target?.token) {
-                    let tDoc = fromUuidSync(context.target.token);
-                    if (tDoc) { 
-                        targetDoc = tDoc.actor || tDoc; 
-                        targetName = tDoc.name || "None"; 
-                    }
-                } 
-                if (targetName === "None" && systemFlags.appliedDamage?.uuid) {
-                    let fetchedDoc = fromUuidSync(systemFlags.appliedDamage.uuid);
-                    if (fetchedDoc) {
-                        targetDoc = fetchedDoc.actor || fetchedDoc;
-                        targetName = fetchedDoc.name || "None";
-                    }
-                } 
-                
-                // Fix Target Resolution: Reverted the strict `&& isHealing` restriction.
-                // We aggressively block AOE payloads from using the speaker fallback to prevent massive self-harm misattribution.
-                if (targetName === "None" && message.speaker?.alias && !hasAoEPayload) {
-                    targetName = message.speaker.alias;
-                    targetDoc = message.actor;
-                }
-
-                let tRawName = targetName;
-                if (targetDoc) {
-                    tRawName = window.CombatParser.getCanonicalName(targetDoc, targetName);
-                    targetName = window.CombatParser.resolveOwner(tRawName, targetDoc, targetName);
-                    targetLevel = getActorLevel(targetDoc);
-                }
-                let actualTargetMinion = (tRawName !== targetName) ? tRawName.replace(/^.+?'s /i, '').trim() : null;
-
                 let hasSolidOrigin = false;
                 let originUuid = systemFlags.origin?.uuid || message.flags["aoe-easy-resolve"]?.origin;
                 let originDoc = null;
+                let inheritedMinion = minionName;
                 
                 if (originUuid) {
                     originDoc = fromUuidSync(originUuid);
@@ -360,110 +342,246 @@ window.CombatParser = {
                     }
                 }
 
-                let flavorText = message.flavor || message.item?.name || fullText;
-                let rollOptions = systemFlags.context?.options || [];
+                let apps = [];
 
-                if (isHealing) {
-                    let isTaggedFastHealing = rollOptions.some(o => o.includes("fast-healing") || o.includes("negative-healing") || o.includes("regeneration"));
-                    let textImpliesFastHealing = isTaggedFastHealing || flavorText.toLowerCase().includes("fast healing") || flavorText.toLowerCase().includes("regeneration");
+                if (isAoESummary) {
+                    let aoeFlags = message.flags?.["aoe-easy-resolve"];
+                    
+                    // Route 1: The Pristine Data Bridge (New Method)
+                    if (aoeFlags && aoeFlags.parsedResults) {
+                        aoeFlags.parsedResults.forEach(r => {
+                            let tDoc = canvas.scene?.tokens?.get(r.tokenId)?.actor || game.actors.find(a => a.name === r.targetName);
+                            apps.push({
+                                targetName: r.targetName,
+                                targetDoc: tDoc,
+                                valueTotal: r.valueTotal,
+                                isHealing: r.isHealing,
+                                mitigatedTotal: r.mitigatedTotal,
+                                isKill: r.isKill,
+                                contextText: `AoE Resolution against ${r.targetName}`
+                            });
+                        });
+                        if (aoeFlags.actionName) actionNameResolved = aoeFlags.actionName;
+                        if (aoeFlags.origin) originUuid = aoeFlags.origin; // Will allow the standard loop to fetch attacker
+                    } 
+                    // Route 2: The HTML Scraper (Fallback for older messages)
+                    else {
+                        const tempDiv = document.createElement('div');
+                        tempDiv.innerHTML = message.content;
+                        
+                        let possibleRows = tempDiv.querySelectorAll('.target-row, .flexrow, li, tr, [data-token-id], [data-actor-id]');
+                        let rows = new Set();
+                        
+                        if (possibleRows.length > 0) {
+                            possibleRows.forEach(r => rows.add(r));
+                        } else {
+                            Array.from(tempDiv.children).forEach(c => rows.add(c));
+                        }
 
-                    if (textImpliesFastHealing) {
-                        attackerName = targetName;
-                        actionNameResolved = flavorText.toLowerCase().includes("regeneration") ? "Regeneration" : "Fast Healing";
-                        hasSolidOrigin = true; 
-                    } else if (!hasSolidOrigin || originDoc?.type === "weapon" || originDoc?.type === "melee") {
-                        attackerName = targetName;
-                        actionNameResolved = (flavorText.toLowerCase().includes("potion") || flavorText.toLowerCase().includes("elixir")) ? "Consumable Healing" : "Passive / Self Healing";
-                        hasSolidOrigin = true; 
+                        let canvasTokens = canvas.scene ? canvas.scene.tokens.contents.sort((a,b) => b.name.length - a.name.length) : [];
+                        let processedTokens = new Set();
+
+                        rows.forEach(row => {
+                            let text = row.textContent.replace(/\s+/g, ' ').trim();
+                            let lowerText = text.toLowerCase();
+                            
+                            let valMatch = text.match(/(\d+)\s*(?:damage|heal|HP)/i);
+                            let val = valMatch ? parseInt(valMatch[1]) : 0;
+                            if (lowerText.includes("immune") || lowerText.includes("takes no damage") || lowerText.includes("unscathed")) val = 0;
+                            
+                            let isHeal = /(?:healed|restored|healing|recovered)/i.test(text);
+                            let isKill = /(?:kills them|destroyed|dying|dead)/i.test(text);
+
+                            let tName = "None";
+                            let tDoc = null;
+                            let tId = null;
+
+                            let aId = row.getAttribute('data-actor-id') || (row.querySelector('[data-actor-id]')?.getAttribute('data-actor-id'));
+                            tId = row.getAttribute('data-token-id') || (row.querySelector('[data-token-id]')?.getAttribute('data-token-id'));
+                            
+                            if (tId) {
+                                let tok = canvas.scene?.tokens?.get(tId);
+                                if (tok) { tName = tok.name; tDoc = tok.actor || tok; }
+                            } 
+                            if (tName === "None" && aId) {
+                                let act = game.actors.get(aId);
+                                if (act) { tName = act.name; tDoc = act; }
+                            }
+
+                            if (tName === "None") {
+                                for (let t of canvasTokens) {
+                                    if (text.includes(t.name)) {
+                                        tName = t.name;
+                                        tDoc = t.actor || t;
+                                        tId = t.id; 
+                                        break;
+                                    }
+                                }
+                            }
+
+                            let uniqueKey = tId || tName;
+
+                            if (tName !== "None" && !processedTokens.has(uniqueKey)) {
+                                if (val > 0 || lowerText.includes("immune") || lowerText.includes("takes no damage")) {
+                                    processedTokens.add(uniqueKey);
+                                    apps.push({ targetName: tName, targetDoc: tDoc, valueTotal: val, isHealing: isHeal, mitigatedTotal: 0, isKill: isKill, contextText: text });
+                                }
+                            }
+                        });
+                        
+                        if (apps.length === 0 && !hasAoEPayload) return;
+                        
+                        if (actionNameResolved === "Unknown Action" || actionNameResolved.toLowerCase().includes("summary")) {
+                             let cleanFlavor = message.flavor ? message.flavor.replace(/<\/?[^>]+(>|$)/g, "").trim().split('\n')[0] : "";
+                             if (cleanFlavor && !cleanFlavor.toLowerCase().includes("summary")) actionNameResolved = cleanFlavor;
+                             else if (message.content) {
+                                 let cMatch = message.content.match(/<h[1-4][^>]*>(.*?)<\/h[1-4]>/i);
+                                 if (cMatch) actionNameResolved = cMatch[1].replace(/<\/?[^>]+(>|$)/g, "").trim();
+                             }
+                        }
                     }
                 } else {
-                    let textImpliesPersistent = flavorText.toLowerCase().includes("persistent damage") || 
-                    actionNameResolved.toLowerCase().includes("persistent damage") || 
-                    (context.type === "persistent-damage");
-
-                    if (textImpliesPersistent) {
-                        // Only rename the action if it lacks a specific feature name from the system
-                        if (actionNameResolved === "Unknown Action" || actionNameResolved.toLowerCase().includes("persistent damage")) {
-                            actionNameResolved = "Persistent Damage";
-                        }
+                    // --- STANDARD SINGLE TARGET PARSING ---
+                    const applied = systemFlags.appliedDamage;
+                    let aoeValue = null;
+                    let isAoEHealing = false;
+                    if (hasAoEPayload) {
+                         isAoEHealing = /(?:healed|restored|healing|recovered)/i.test(message.flags["aoe-easy-resolve"].damageTooltip || fullText);
+                         aoeValue = parseInt(message.flags["aoe-easy-resolve"].damageTotal);
+                    }
                     
-                        // We drop the self-harm check. If the Barbarian rots themselves, they get the stat!
-                        if (!hasSolidOrigin || attackerName === "Unknown Source") {
-                            attackerName = "Environment";
+                    const isHealing = applied ? applied.isHealing === true : (isAoEHealing || /(?:healed|restored|healing|recovered)/i.test(fullText));
+                    
+                    let targetName = "None";
+                    let targetDoc = null;
+
+                    if (context.target?.token) {
+                        let tDoc = fromUuidSync(context.target.token);
+                        if (tDoc) { 
+                            targetDoc = tDoc.actor || tDoc; 
+                            targetName = tDoc.name || "None"; 
+                        }
+                    } 
+                    if (targetName === "None" && systemFlags.appliedDamage?.uuid) {
+                        let fetchedDoc = fromUuidSync(systemFlags.appliedDamage.uuid);
+                        if (fetchedDoc) {
+                            targetDoc = fetchedDoc.actor || fetchedDoc;
+                            targetName = fetchedDoc.name || "None";
+                        }
+                    } 
+                    
+                    if (targetName === "None" && message.speaker?.alias && !hasAoEPayload) {
+                        targetName = message.speaker.alias;
+                        targetDoc = message.actor;
+                    }
+
+                    let flavorText = message.flavor || message.item?.name || fullText;
+                    let rollOptions = systemFlags.context?.options || [];
+
+                    if (isHealing) {
+                        let isTaggedFastHealing = rollOptions.some(o => o.includes("fast-healing") || o.includes("negative-healing") || o.includes("regeneration"));
+                        let textImpliesFastHealing = isTaggedFastHealing || flavorText.toLowerCase().includes("fast healing") || flavorText.toLowerCase().includes("regeneration");
+
+                        if (textImpliesFastHealing) {
+                            attackerName = targetName;
+                            actionNameResolved = flavorText.toLowerCase().includes("regeneration") ? "Regeneration" : "Fast Healing";
+                            hasSolidOrigin = true; 
+                        } else if (!hasSolidOrigin || originDoc?.type === "weapon" || originDoc?.type === "melee") {
+                            attackerName = targetName;
+                            actionNameResolved = (flavorText.toLowerCase().includes("potion") || flavorText.toLowerCase().includes("elixir")) ? "Consumable Healing" : "Passive / Self Healing";
                             hasSolidOrigin = true; 
                         }
-                    }
-                }
+                    } else {
+                        let textImpliesPersistent = flavorText.toLowerCase().includes("persistent damage") || 
+                        actionNameResolved.toLowerCase().includes("persistent damage") || 
+                        (context.type === "persistent-damage");
 
-                if (!hasSolidOrigin && (attackerName === "Unknown Source" || attackerName === targetName)) {
-                    for (let i = activeLedger.masterLog.length - 1; i >= 0; i--) {
-                        let prev = activeLedger.masterLog[i];
-                        if (prev.type === "Roll" || prev.type === "Attack" || prev.type === "Spell") {
-                            attackerName = prev.source;
-                            if (prev.name && prev.name !== "Unknown Action") actionNameResolved = prev.name;
-                            if (prev.minion) inheritedMinion = prev.minion;
-                            attackerDoc = game.actors.find(a => a.name === attackerName);
-                            break;
+                        if (textImpliesPersistent) {
+                            if (actionNameResolved === "Unknown Action" || actionNameResolved.toLowerCase().includes("persistent damage")) {
+                                actionNameResolved = "Persistent Damage";
+                            }
+                            if (!hasSolidOrigin || attackerName === "Unknown Source") {
+                                attackerName = "Environment";
+                                hasSolidOrigin = true; 
+                            }
                         }
                     }
+
+                    let valueTotal = 0;
+                    if (aoeValue !== null) {
+                         valueTotal = aoeValue;
+                    } else if (applied && applied.damage !== undefined) {
+                         valueTotal = parseInt(applied.damage);
+                    } else if (applied && applied.amount !== undefined) {
+                         valueTotal = parseInt(applied.amount);
+                    } else {
+                        const textMatch = fullText.match(/(?:damaged for|healed|takes|restored|healing|applied|recovered|loses|hit for)[^\d]*(\d+)/i) || fullText.match(/(\d+)\s*(?:HP|Damage|DMG|Heal|Healing|applied|points)/i);
+                        if (textMatch) valueTotal = parseInt(textMatch[1]);
+                    }
+                    
+                    if (/(?:unscathed|completely absorbing)/i.test(fullText)) valueTotal = 0;
+
+                    let mitigatedTotal = 0;
+                    const mitRegex = /(?:reduced by|resist|absorb|shield block|mitigat)[^\d]*(\d+)/ig;
+                    let mitMatch;
+                    while ((mitMatch = mitRegex.exec(fullText)) !== null) mitigatedTotal += parseInt(mitMatch[1]);
+
+                    let isKill = false;
+                    if (applied && applied.updates) {
+                        applied.updates.forEach(u => { if (u.path && u.path.includes("hp.value") && parseInt(u.value) <= 0) isKill = true; });
+                    }
+                    if (/(?:unconscious|dying|dead|destroyed|kill)/i.test(fullText)) isKill = true;
+
+                    if (valueTotal > 0 || mitigatedTotal > 0 || /(?:unscathed|completely absorbing)/i.test(fullText)) {
+                        apps.push({ targetName, targetDoc, valueTotal, isHealing, mitigatedTotal, isKill, contextText: fullText });
+                    }
                 }
-                let valueTotal = 0;
-                if (aoeValue !== null) {
-                     valueTotal = aoeValue;
-                } else if (applied && applied.damage !== undefined) {
-                     valueTotal = parseInt(applied.damage);
-                } else if (applied && applied.amount !== undefined) {
-                     valueTotal = parseInt(applied.amount);
-                } else {
-                    const textMatch = fullText.match(/(?:damaged for|healed|takes|restored|healing|applied|recovered|loses|hit for)[^\d]*(\d+)/i) || fullText.match(/(\d+)\s*(?:HP|Damage|DMG|Heal|Healing|applied|points)/i);
-                    if (textMatch) valueTotal = parseInt(textMatch[1]);
+
+               // If Origin is STILL completely unknown, dig backward for the caster
+               if (!hasSolidOrigin && (attackerName === "Unknown Source" || attackerName === "Gamemaster" || attackerName === "Environment" || attackerName === "Unknown")) {
+                for (let i = activeLedger.masterLog.length - 1; i >= 0; i--) {
+                    let prev = activeLedger.masterLog[i];
+                    
+                    // Keep digging backward until we find a REAL actor who rolled or cast a spell
+                    if ((prev.type === "Roll" || prev.type === "Attack" || prev.type === "Spell") && 
+                        prev.source !== "Gamemaster" && prev.source !== "Unknown Source" && prev.source !== "Unknown") {
+                        
+                        attackerName = prev.source;
+                        if (prev.name && prev.name !== "Unknown Action" && (!actionNameResolved || actionNameResolved === "Unknown Action")) {
+                            actionNameResolved = prev.name;
+                        }
+                        if (prev.minion) inheritedMinion = prev.minion;
+                        attackerDoc = game.actors.find(a => a.name === attackerName);
+                        break;
+                    }
                 }
-                
-                if (/(?:unscathed|completely absorbing)/i.test(fullText)) valueTotal = 0;
-                if (valueTotal === 0 && !/(?:unscathed|completely absorbing)/i.test(fullText)) return;
+            }
 
-                let aMaster = this.getMasterName(attackerDoc, attackerName);
-                let aAlly = attackerName === resolvedOwner ? stats?.isAlly : false;
-                if (aMaster && !aAlly) {
-                    let mDoc = game.actors.find(a => a.name === aMaster);
-                    if (mDoc && (mDoc.type === "character" || mDoc.hasPlayerOwner)) aAlly = true;
-                }
+                // Execute the math for every valid application we scraped
+                apps.forEach(app => {
+                    let tName = app.targetName;
+                    let tDoc = app.targetDoc;
+                    
+                    let tRawName = tName;
+                    let targetLevel = 0;
+                    if (tDoc) {
+                        tRawName = window.CombatParser.getCanonicalName(tDoc, tName);
+                        tName = window.CombatParser.resolveOwner(tRawName, tDoc, tName);
+                        targetLevel = getActorLevel(tDoc);
+                    }
+                    let actualTargetMinion = (tRawName !== tName) ? tRawName.replace(/^.+?'s /i, '').trim() : null;
 
-                if (!activeLedger.actors[attackerName]) {
-                    activeLedger.actors[attackerName] = {
-                        name: attackerName, type: attackerType, level: attackerLevel, isAlly: aAlly,
-                        master: aMaster,
-                        damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
-                        damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
-                        incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
-                        advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {} },
-                        nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
-                    };
-                }
-                let aStats = activeLedger.actors[attackerName];
-                if (aMaster && !aStats.master) aStats.master = aMaster;
-                if (aAlly && !aStats.isAlly) aStats.isAlly = true;
-
-                let currentRound = game.combat ? game.combat.round : 1;
-                if (currentRound > activeLedger.maxRounds) activeLedger.maxRounds = currentRound;
-
-                let mitigatedTotal = 0;
-                const mitRegex = /(?:reduced by|resist|absorb|shield block|mitigat)[^\d]*(\d+)/ig;
-                let mitMatch;
-                while ((mitMatch = mitRegex.exec(fullText)) !== null) mitigatedTotal += parseInt(mitMatch[1]);
-
-                if (targetName !== "None") {
-                    let targetMaster = this.getMasterName(targetDoc, targetName); 
-                    let tAlly = targetDoc ? checkIsAlly(targetDoc) : false;
-                    if (targetMaster && !tAlly) {
-                        let mDoc = game.actors.find(a => a.name === targetMaster);
-                        if (mDoc && (mDoc.type === "character" || mDoc.hasPlayerOwner)) tAlly = true;
+                    let aMaster = this.getMasterName(attackerDoc, attackerName);
+                    let aAlly = attackerName === resolvedOwner ? stats?.isAlly : false;
+                    if (aMaster && !aAlly) {
+                        let mDoc = game.actors.find(a => a.name === aMaster);
+                        if (mDoc && (mDoc.type === "character" || mDoc.hasPlayerOwner)) aAlly = true;
                     }
 
-                    if (!activeLedger.actors[targetName]) {
-                        activeLedger.actors[targetName] = {
-                            name: targetName, type: targetDoc ? targetDoc.type : "npc", level: targetLevel, isAlly: tAlly,
-                            master: targetMaster,
+                    if (!activeLedger.actors[attackerName]) {
+                        activeLedger.actors[attackerName] = {
+                            name: attackerName, type: attackerType, level: attackerLevel, isAlly: aAlly,
+                            master: aMaster,
                             damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
                             damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
                             incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
@@ -471,80 +589,99 @@ window.CombatParser = {
                             nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
                         };
                     }
-                    let tStats = activeLedger.actors[targetName];
-                    if (targetMaster && !tStats.master) tStats.master = targetMaster;
-                    if (tAlly && !tStats.isAlly) tStats.isAlly = true;
+                    let aStats = activeLedger.actors[attackerName];
+                    if (aMaster && !aStats.master) aStats.master = aMaster;
+                    if (aAlly && !aStats.isAlly) aStats.isAlly = true;
 
-                    if (mitigatedTotal > 0 && !isHealing) {
-                        tStats.mitigated += mitigatedTotal;
-                        if (!tStats.mitigatedSources) tStats.mitigatedSources = {};
-                        tStats.mitigatedSources[attackerName] = (tStats.mitigatedSources[attackerName] || 0) + mitigatedTotal;
-                    }
-                    
-                    let cleanAction = actionNameResolved.split(/(?: - | \| )/)[0].trim().replace(/\s*\([^)]*$/, "").replace(/^(?:Damage Roll:\s*|Roll:\s*)/i, "").trim();
-                    let displayAction = actualTargetMinion ? `[Hit: ${actualTargetMinion}] ${cleanAction}` : cleanAction;
+                    let currentRound = game.combat ? game.combat.round : 1;
+                    if (currentRound > activeLedger.maxRounds) activeLedger.maxRounds = currentRound;
 
-                    if (valueTotal > 0 && !isHealing) {
-                        let typeFound = false;
-                        if (message.rolls) {
-                            message.rolls.forEach(r => {
-                                if (r.instances) {
-                                    r.instances.forEach(i => {
-                                        let dt = i.type || "untyped";
-                                        tStats.damageTakenTypes[dt] = (tStats.damageTakenTypes[dt] || 0) + i.total;
-                                        typeFound = true;
-                                    });
-                                }
-                            });
-                        } 
-                        if (!typeFound) tStats.damageTakenTypes["applied"] = (tStats.damageTakenTypes["applied"] || 0) + valueTotal;
+                    if (tName !== "None") {
+                        let targetMaster = this.getMasterName(tDoc, tName); 
+                        let tAlly = tDoc ? checkIsAlly(tDoc) : false;
+                        if (targetMaster && !tAlly) {
+                            let mDoc = game.actors.find(a => a.name === targetMaster);
+                            if (mDoc && (mDoc.type === "character" || mDoc.hasPlayerOwner)) tAlly = true;
+                        }
 
-                        if (!tStats.damageTakenSources[attackerName]) tStats.damageTakenSources[attackerName] = {};
-                        tStats.damageTakenSources[attackerName][displayAction] = (tStats.damageTakenSources[attackerName][displayAction] || 0) + valueTotal;
-                    }
-                    else if (valueTotal > 0 && isHealing) {
-                        if (!tStats.healingReceivedSources[attackerName]) tStats.healingReceivedSources[attackerName] = {};
-                        tStats.healingReceivedSources[attackerName][displayAction] = (tStats.healingReceivedSources[attackerName][displayAction] || 0) + valueTotal;
-                    }
-                }
+                        if (!activeLedger.actors[tName]) {
+                            activeLedger.actors[tName] = {
+                                name: tName, type: tDoc ? tDoc.type : "npc", level: targetLevel, isAlly: tAlly,
+                                master: targetMaster,
+                                damageDealt: 0, healingDealt: 0, hits: 0, misses: 0, crits: 0, critMisses: 0, 
+                                damageTakenTypes: {}, damageTakenSources: {}, healingReceivedSources: {}, mitigatedSources: {},
+                                incomingAttacks: 0, incomingAttacksDodged: 0, incomingSaves: 0, incomingSavesResisted: 0,
+                                advanced: { huntedShots: 0, huntedShotDmg: 0, taunts: 0, tauntTriggers: 0, surges: 0, surgeFriendlyDmg: 0, surgeTypes: {} },
+                                nat1s: 0, nat20s: 0, kills: 0, mitigated: 0, heroPoints: 0, heroPointCrits: 0, expectedDamage: 0, actualDamageRoll: 0, damageTypes: {}, turnTimes: [], d20Rolls: Array(20).fill(0), history: [] 
+                            };
+                        }
+                        let tStats = activeLedger.actors[tName];
+                        if (targetMaster && !tStats.master) tStats.master = targetMaster;
+                        if (tAlly && !tStats.isAlly) tStats.isAlly = true;
 
-                if (valueTotal === 0 && mitigatedTotal === 0) return; 
+                        if (app.mitigatedTotal > 0 && !app.isHealing) {
+                            tStats.mitigated += app.mitigatedTotal;
+                            if (!tStats.mitigatedSources) tStats.mitigatedSources = {};
+                            tStats.mitigatedSources[attackerName] = (tStats.mitigatedSources[attackerName] || 0) + app.mitigatedTotal;
+                        }
+                        
+                        let cleanAction = actionNameResolved.split(/(?: - | \| )/)[0].trim().replace(/\s*\([^)]*$/, "").replace(/^(?:Damage Roll:\s*|Roll:\s*)/i, "").trim();
+                        let displayAction = actualTargetMinion ? `[Hit: ${actualTargetMinion}] ${cleanAction}` : cleanAction;
 
-                let isKill = false;
-                if (applied && applied.updates) {
-                    applied.updates.forEach(u => { if (u.path && u.path.includes("hp.value") && parseInt(u.value) <= 0) isKill = true; });
-                }
-                if (/(?:unconscious|dying|dead|destroyed|kill)/i.test(fullText)) isKill = true;
+                        if (app.valueTotal > 0 && !app.isHealing) {
+                            let typeFound = false;
+                            if (message.rolls && !isAoESummary) {
+                                message.rolls.forEach(r => {
+                                    if (r.instances) {
+                                        r.instances.forEach(i => {
+                                            let dt = i.type || "untyped";
+                                            tStats.damageTakenTypes[dt] = (tStats.damageTakenTypes[dt] || 0) + i.total;
+                                            typeFound = true;
+                                        });
+                                    }
+                                });
+                            } 
+                            if (!typeFound) tStats.damageTakenTypes["applied"] = (tStats.damageTakenTypes["applied"] || 0) + app.valueTotal;
 
-                if (isHealing) {
-                    aStats.healingDealt += valueTotal;
-                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: "Heal", name: actionNameResolved, result: `${valueTotal} HEALED`, detail: `Actual HP restored via healing.`, damageVal: 0, healVal: valueTotal, minion: inheritedMinion };
-                    aStats.history.push(logEntry);
-                    activeLedger.masterLog.push(logEntry);
-                } else {
-                    aStats.damageDealt += valueTotal;
-                    if (isKill) aStats.kills++;
-                    activeLedger.totalDamage += valueTotal;
-                    if (actionNameResolved.toLowerCase().includes("hunted shot") || lowerFull.includes("hunted shot")) {
-                        aStats.advanced.huntedShotDmg += valueTotal;
-                    }
-                    if (lowerFull.includes("wellspring surge")) {
-                        let isTargetAlly = activeLedger.actors[targetName]?.isAlly;
-                        if (aStats.isAlly && isTargetAlly) {
-                            aStats.advanced.surgeFriendlyDmg += valueTotal;
+                            if (!tStats.damageTakenSources[attackerName]) tStats.damageTakenSources[attackerName] = {};
+                            tStats.damageTakenSources[attackerName][displayAction] = (tStats.damageTakenSources[attackerName][displayAction] || 0) + app.valueTotal;
+                        }
+                        else if (app.valueTotal > 0 && app.isHealing) {
+                            if (!tStats.healingReceivedSources[attackerName]) tStats.healingReceivedSources[attackerName] = {};
+                            tStats.healingReceivedSources[attackerName][displayAction] = (tStats.healingReceivedSources[attackerName][displayAction] || 0) + app.valueTotal;
                         }
                     }
-                    
-                    let resultText = valueTotal === 0 ? `FULLY MITIGATED` : `${valueTotal} DMG APPLIED`;
-                    if (isKill) resultText += " 💀";
-                    if (mitigatedTotal > 0) resultText += ` <span style="color:#aaa;">(${mitigatedTotal} BLKD)</span>`;
-                    
-                    const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: targetName, type: valueTotal === 0 ? "Mitigation" : "Damage", name: actionNameResolved, result: resultText, detail: `Actual HP removed after saves, weaknesses, and resistances.`, damageVal: valueTotal, healVal: 0, minion: inheritedMinion };
-                    aStats.history.push(logEntry);
-                    activeLedger.masterLog.push(logEntry);
-                }
-                
-                if (isCombatPhase) this.saveLiveBackup();
+
+                    if (app.isHealing) {
+                        aStats.healingDealt += app.valueTotal;
+                        const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: tName, type: "Heal", name: actionNameResolved, result: `${app.valueTotal} HEALED`, detail: `Actual HP restored via healing.`, damageVal: 0, healVal: app.valueTotal, minion: inheritedMinion };
+                        aStats.history.push(logEntry);
+                        activeLedger.masterLog.push(logEntry);
+                    } else {
+                        aStats.damageDealt += app.valueTotal;
+                        if (app.isKill) aStats.kills++;
+                        activeLedger.totalDamage += app.valueTotal;
+                        if (actionNameResolved.toLowerCase().includes("hunted shot") || lowerFull.includes("hunted shot")) {
+                            aStats.advanced.huntedShotDmg += app.valueTotal;
+                        }
+                        if (lowerFull.includes("wellspring surge")) {
+                            let isTargetAlly = activeLedger.actors[tName]?.isAlly;
+                            if (aStats.isAlly && isTargetAlly) {
+                                aStats.advanced.surgeFriendlyDmg += app.valueTotal;
+                            }
+                        }
+                        
+                        let resultText = app.valueTotal === 0 ? `FULLY MITIGATED` : `${app.valueTotal} DMG APPLIED`;
+                        if (app.isKill) resultText += " 💀";
+                        if (app.mitigatedTotal > 0) resultText += ` <span style="color:#aaa;">(${app.mitigatedTotal} BLKD)</span>`;
+                        
+                        const logEntry = { id: foundry.utils.randomID(), round: currentRound, source: attackerName, target: tName, type: app.valueTotal === 0 ? "Mitigation" : "Damage", name: actionNameResolved, result: resultText, detail: `Actual HP removed after saves, weaknesses, and resistances.`, damageVal: app.valueTotal, healVal: 0, minion: inheritedMinion };
+                        aStats.history.push(logEntry);
+                        activeLedger.masterLog.push(logEntry);
+                    }
+                });
+
+                if (apps.length > 0 && isCombatPhase) this.saveLiveBackup();
                 return; 
             }
 
@@ -819,7 +956,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                         let db = game.settings.get('pf2e-holodeck', dbName) || {};
                         db[encName] = targetLedger;
                         
-                        // THE LAG DESTROYER
                         let doc = game.settings.storage.get("world").find(s => s.key === `pf2e-holodeck.${dbName}`);
                         if (doc) await doc.update({ value: db }, { diff: false });
                         else await game.settings.set('pf2e-holodeck', dbName, db);
@@ -841,7 +977,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     return ui.notifications.warn("Combat Forensics | Cannot add logs to a Meta aggregate. Select a specific encounter.");
                 }
 
-                // Acquire the correct ledger
                 let targetLedger = this.selectedEncounter === "current" ? window.CombatParser.ledger :
                                    this.selectedEncounter === "exploration" ? window.CombatParser.explorationLedger : null;
                 let dbName = null;
@@ -857,7 +992,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 
                 if (!targetLedger) return ui.notifications.error("Combat Forensics | Could not locate ledger data.");
 
-                // Build dynamic dropdowns based on who is currently in the encounter
                 let actorOptions = `<option value="Environment">Environment</option><option value="Unknown">Unknown</option>`;
                 let targetOptions = `<option value="None">None</option>`;
                 Object.keys(targetLedger.actors).sort().forEach(a => {
@@ -980,7 +1114,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                     targetLedger.totalDamage = (targetLedger.totalDamage || 0) + confirm.value;
                 }
 
-                // THE LAG DESTROYER: Bypass diffObject entirely
                 const flatLedger = JSON.parse(JSON.stringify(targetLedger));
                 const saveFast = async (db, data) => {
                     let doc = game.settings.storage.get("world").find(s => s.key === `pf2e-holodeck.${db}`);
@@ -1092,7 +1225,6 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 
                 targetLedger.masterLog.splice(logIndex, 1);
 
-                // THE LAG DESTROYER: Bypass diffObject entirely
                 const flatLedger = JSON.parse(JSON.stringify(targetLedger));
                 const saveFast = async (db, data) => {
                     let doc = game.settings.storage.get("world").find(s => s.key === `pf2e-holodeck.${db}`);
@@ -2886,21 +3018,18 @@ Hooks.on('createChatMessage', (message) => {
     const hasAppliedDamage = !!systemFlags.appliedDamage;
     const hasAoEPayload = message.flags?.["aoe-easy-resolve"]?.damageTotal !== undefined;
 
- 
     const isBaseCard = context.type === "spell-cast" || context.type === "action" || context.type === "spell-effect";
-    // VETO FIX: Modules like AOE Easy Resolve embed the damage roll directly into the spell cast card.
-    if (isBaseCard && !hasAoEPayload && !message.isDamageRoll && !(message.rolls && message.rolls.length > 0)) return;
-
     const isNarrative = /(?:takes|taking|applied|healed|restored|reduced by|mitigated|recovered)[^\d]*\d+/i.test(fullText) || /(?:unscathed|completely absorbing|guardian's taunt|wellspring surge|taunt penalty|hunted shot)/i.test(fullText);
+    const isAoESummary = fullText.includes("resolution summary") || fullText.includes("save summary");
 
-    if (!isDamageTaken && !isAttack && !isSave && !isSkill && !isDamageRoll && !hasAppliedDamage && !isNarrative && !hasAoEPayload) return;
+    // VETO FIX: We must allow Base Cards through so the timeline tracks who cast the spell!
+    if (!isBaseCard && !isDamageTaken && !isAttack && !isSave && !isSkill && !isDamageRoll && !hasAppliedDamage && !isNarrative && !hasAoEPayload && !isAoESummary) return;
 
     window.CombatParser.parseMessage(message);
 
     if (isHolodeck && game.user.isGM && !isSecret && (hasAppliedDamage || isDamageTaken || isNarrative || hasAoEPayload)) message.delete();
     if (window.combatForensicsInstance && window.combatForensicsInstance.rendered) window.combatForensicsInstance.render();
 });
-
 Hooks.on('updateCombat', (combat, changed) => {
     if (!game.user.isGM) return;
     const activeLedger = window.CombatParser.ledger;
