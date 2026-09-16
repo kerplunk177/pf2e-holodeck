@@ -14,7 +14,7 @@ jobs:
           -H "Authorization: ${{ secrets.FOUNDRY_TOKEN }}" \
           -d '{
             "id": "pf2e-holodeck",
-            "dry-run": true,
+            "dry-run": false,
             "release": {
               "version": "${{ github.event.release.tag_name }}",
               "manifest": "https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/module.json",
