@@ -161,15 +161,60 @@ window.CombatParser = {
             console.log("Combat Forensics | Restored mid-session combat from backup.");
         }
     },
+    scrapePrehistoricData: async function() {
+        console.log("PF2e Holodeck | Excavating prehistoric chat logs...");
+        
+        const hDb = game.settings.get('pf2e-holodeck', 'combatHistory') || {};
+        const eDb = game.settings.get('pf2e-holodeck', 'explorationHistory') || {};
+        const sDb = game.settings.get('pf2e-holodeck', 'holodeckHistory') || {};
+        
+        let oldestTime = Date.now();
+        const allLedgers = [...Object.values(hDb), ...Object.values(eDb), ...Object.values(sDb)];
+        allLedgers.forEach(ledger => {
+            if (ledger.startTime && ledger.startTime < oldestTime) {
+                oldestTime = ledger.startTime;
+            }
+        });
 
-    parseMessage: function(message) {
+        const allMsgs = await ChatMessage.getDocuments();
+        const prehistoricMsgs = allMsgs.filter(m => m.timestamp < oldestTime);
+        
+        if (prehistoricMsgs.length === 0) {
+            return ui.notifications.warn("PF2e Holodeck | No prehistoric messages found before module installation.");
+        }
+
+        const liveBackup = foundry.utils.deepClone(this.ledger);
+        this.resetLedger();
+        
+        ui.notifications.info(`PF2e Holodeck | Processing ${prehistoricMsgs.length} ancient texts... This may take a moment.`);
+
+        for (let msg of prehistoricMsgs) {
+            const isCombat = msg.isDamageRoll || msg.flags?.pf2e?.context?.type || msg.flavor?.toLowerCase().includes("damage");
+            if (!isCombat) continue;
+            
+            this.parseMessage(msg, true, true); 
+        }
+
+        const encName = "[ARCHIVED] Prehistoric Data";
+        let newDb = Object.assign({}, hDb);
+        newDb[encName] = JSON.parse(JSON.stringify(this.ledger));
+        
+        let doc = game.settings.storage.get("world").find(s => s.key === 'pf2e-holodeck.combatHistory');
+        if (doc) await doc.update({ value: newDb }, { diff: false });
+        else await game.settings.set('pf2e-holodeck', 'combatHistory', newDb);
+
+        this.ledger = liveBackup;
+        ui.notifications.info("PF2e Holodeck | Prehistoric data successfully excavated and saved.");
+    },
+
+    parseMessage: function(message, forceCombat = false, skipBackup = false) {
         try {
             const systemFlags = message.flags?.pf2e || message.flags?.sf2e || {};
             const context = systemFlags.context || {};
             const fullText = `${message.flavor || ""} ${message.content || ""}`.replace(/<[^>]*>?/gm, ' ').trim();
             const lowerFull = fullText.toLowerCase();
 
-            const isCombatPhase = (canvas.scene && canvas.scene.getFlag('pf2e-holodeck', 'active')) || (game.combat && game.combat.active);
+            const isCombatPhase = forceCombat || (canvas.scene && canvas.scene.getFlag('pf2e-holodeck', 'active')) || (game.combat && game.combat.active);
             const activeLedger = isCombatPhase ? this.ledger : this.explorationLedger;
             // --- AUTO-UNDO DAMAGE INTERCEPTOR ---
             const isUndoMsg = lowerFull.includes("applied to") && lowerFull.includes("reverted");
@@ -229,7 +274,7 @@ window.CombatParser = {
                             
                             activeLedger.masterLog.splice(i, 1);
                             console.log(`Combat Forensics | Auto-reverted previous log for ${targetName}.`);
-                            if (isCombatPhase) this.saveLiveBackup();
+                            if (isCombatPhase && !skipBackup) this.saveLiveBackup();
                             break; 
                         }
                     }
@@ -366,7 +411,7 @@ window.CombatParser = {
                 };
                 if (stats) stats.history.push(logEntry);
                 activeLedger.masterLog.push(logEntry);
-                if (isCombatPhase) this.saveLiveBackup();
+                if (isCombatPhase && !skipBackup) this.saveLiveBackup();
                 return;
             }
 
@@ -533,9 +578,13 @@ window.CombatParser = {
                     }
 
                     let flavorText = message.flavor || message.item?.name || fullText;
-                    let rollOptions = systemFlags.context?.options || [];
+                let rollOptions = systemFlags.context?.options || [];
 
-                    if (isHealing) {
+                if (rollOptions.includes("spellstrike") && !actionNameResolved.toLowerCase().includes("spellstrike")) {
+                    actionNameResolved = `Spellstrike: ${actionNameResolved}`;
+                }
+
+                if (isHealing) {
                         let isTaggedFastHealing = rollOptions.some(o => o.includes("fast-healing") || o.includes("negative-healing") || o.includes("regeneration"));
                         let textImpliesFastHealing = isTaggedFastHealing || flavorText.toLowerCase().includes("fast healing") || flavorText.toLowerCase().includes("regeneration");
 
@@ -549,14 +598,13 @@ window.CombatParser = {
                             hasSolidOrigin = true; 
                         }
                     } else {
-                        let textImpliesPersistent = flavorText.toLowerCase().includes("persistent damage") || 
-                        actionNameResolved.toLowerCase().includes("persistent damage") || 
-                        (context.type === "persistent-damage");
-
+                        let textImpliesPersistent = (context.type === "persistent-damage") || 
+                                                    actionNameResolved.toLowerCase() === "persistent damage" ||
+                                                    /^persistent.*damage$/i.test(flavorText.trim());
+    
                         if (textImpliesPersistent) {
-                            if (actionNameResolved === "Unknown Action" || actionNameResolved.toLowerCase().includes("persistent damage")) {
-                                actionNameResolved = "Persistent Damage";
-                            }
+                            actionNameResolved = "Persistent Damage";
+                            
                             if (!hasSolidOrigin || attackerName === "Unknown Source") {
                                 attackerName = "Environment";
                                 hasSolidOrigin = true; 
@@ -811,7 +859,7 @@ window.CombatParser = {
                     activeLedger.masterLog.push(logEntry);
                 }
                 
-                if (isCombatPhase) this.saveLiveBackup();
+                if (isCombatPhase && !skipBackup) this.saveLiveBackup();
                 return;
             }
 
@@ -955,7 +1003,7 @@ window.CombatParser = {
                 stats.history.push(logEntry);
                 activeLedger.masterLog.push(logEntry);
                 
-                if (isCombatPhase) this.saveLiveBackup();
+                if (isCombatPhase && !skipBackup) this.saveLiveBackup();
             }
         } catch (e) {
             console.error("Combat Forensics Parser Error:", e);
@@ -1829,6 +1877,14 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                             </button>
                             <input type="file" id="json-upload-input" accept=".json" style="display: none;">
                         </div>
+                        <hr style="border: 0; border-top: 1px dashed #444; margin: 15px 0;">
+                        <div class="form-group">
+                            <label style="font-weight: bold; color: #ffaa00; display:block; margin-bottom:4px;">Excavate Prehistoric Data:</label>
+                            <p style="font-size: 0.8em; color: #aaa; margin-top: 0; margin-bottom: 6px;">Scan the Foundry chat log for combat data generated before this module was installed.</p>
+                            <button type="button" id="btn-excavate-history" style="width: 100%; background: #332211; border: 1px solid #ffaa00; color: #fff; padding: 8px; cursor: pointer;">
+                                <i class="fas fa-hammer"></i> Scrape Prehistoric Data
+                            </button>
+                        </div>
                     </div>
                 `;
 
@@ -1903,6 +1959,23 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
                             }
                         };
                         reader.readAsText(file);
+                    });
+                }
+
+                // --- NEW: EXCAVATOR BUTTON LOGIC ---
+                const btnExcavate = html.querySelector('#btn-excavate-history');
+                if (btnExcavate) {
+                    btnExcavate.addEventListener('click', async (e) => {
+                        e.preventDefault();
+                        dialog.close();
+                        
+                        if (window.CombatParser && window.CombatParser.scrapePrehistoricData) {
+                            await window.CombatParser.scrapePrehistoricData();
+                            this.selectedEncounter = "[ARCHIVED] Prehistoric Data"; // Auto-switch to the new data
+                            this.render({ force: true });
+                        } else {
+                            ui.notifications.error("Combat Forensics | Excavator function not found on CombatParser.");
+                        }
                     });
                 }
             }
@@ -2791,30 +2864,33 @@ class CombatForensicsApp extends foundry.applications.api.HandlebarsApplicationM
 
         const applyDprMath = (p) => {
             let roundsActive = maxRounds;
-            
-            if (p.turnTimes && p.turnTimes.length > 0) {
-                roundsActive = p.turnTimes.length;
-            } 
-            else if (p.history && p.history.length > 0) {
-                roundsActive = new Set(p.history.map(h => h.round)).size;
-            }
-            
+            if (p.turnTimes && p.turnTimes.length > 0) roundsActive = p.turnTimes.length;
+            else if (p.history && p.history.length > 0) roundsActive = new Set(p.history.map(h => h.round)).size;
             roundsActive = Math.max(1, roundsActive);
 
             p.damagePercent = Math.round((p.damageDealt / totalDamage) * 100) || 0;
-            p.dpr = Math.round((p.damageDealt / roundsActive) * 10) / 10 || 0; 
             
-            let histDpr = historicalStats[p.name] || 0;
-            p.historicalDpr = Math.round(histDpr * 10) / 10;
+            const isPrehistoric = this.selectedEncounter === "[ARCHIVED] Prehistoric Data";
             
-            if (histDpr > 0) {
-                let delta = ((p.dpr / histDpr) - 1) * 100;
-                p.dprDelta = Math.round(delta);
-                p.dprDeltaStr = p.dprDelta >= 0 ? `+${p.dprDelta}%` : `${p.dprDelta}%`;
-                p.dprDeltaColor = p.dprDelta >= 0 ? "#44ff44" : "#ff6666";
-            } else {
+            if (isPrehistoric) {
+                p.dpr = "N/A";
+                p.historicalDpr = "N/A";
                 p.dprDeltaStr = "N/A";
                 p.dprDeltaColor = "#888";
+            } else {
+                p.dpr = Math.round((p.damageDealt / roundsActive) * 10) / 10 || 0; 
+                let histDpr = historicalStats[p.name] || 0;
+                p.historicalDpr = Math.round(histDpr * 10) / 10;
+                
+                if (histDpr > 0) {
+                    let delta = ((p.dpr / histDpr) - 1) * 100;
+                    p.dprDelta = Math.round(delta);
+                    p.dprDeltaStr = p.dprDelta >= 0 ? `+${p.dprDelta}%` : `${p.dprDelta}%`;
+                    p.dprDeltaColor = p.dprDelta >= 0 ? "#44ff44" : "#ff6666";
+                } else {
+                    p.dprDeltaStr = "N/A";
+                    p.dprDeltaColor = "#888";
+                }
             }
         };
 
