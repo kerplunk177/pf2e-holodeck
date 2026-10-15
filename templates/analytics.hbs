@@ -400,6 +400,21 @@
                             {{#each d20Graph}}<div style="flex: 1;">{{value}}</div>{{/each}}
                         </div>
 
+                       {{#if mapBreakdown.length}}
+                        <div style="text-align: center; color: #44aaff; font-weight: bold; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; border-bottom: 1px solid #444; padding-bottom: 5px;">
+                            Strike Discipline (MAP Accuracy)
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-bottom: 18px;">
+                            {{#each mapBreakdown}}
+                            <div style="flex: 1; background: rgba(0,0,0,0.4); border: 1px solid #333; border-top: 2px solid {{color}}; padding: 6px 8px; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.75em; color: #aaa; text-transform: uppercase; margin-bottom: 4px;">{{label}}</div>
+                                <div style="font-size: 1.15em; font-weight: bold; color: {{color}};">{{hitPct}}% Hit <span style="font-size: 0.75em; color: #ffcc00;">({{critPct}}% Crit)</span></div>
+                                <div style="font-size: 0.75em; color: #777; margin-top: 2px;">{{hits}} / {{total}} Landed</div>
+                            </div>
+                            {{/each}}
+                        </div>
+                        {{/if}}
+
                         {{#if abilityBreakdown.length}}
                         <div style="text-align: center; color: #ffaa00; font-weight: bold; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px;">
                             Ability Output Profile
@@ -629,6 +644,21 @@
                             </div>
                             {{/if}}
                         </div>
+
+                       {{#if mapBreakdown.length}}
+                        <div style="text-align: center; color: #44aaff; font-weight: bold; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; border-bottom: 1px solid #444; padding-bottom: 5px;">
+                            Strike Discipline (MAP Accuracy)
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-bottom: 18px;">
+                            {{#each mapBreakdown}}
+                            <div style="flex: 1; background: rgba(0,0,0,0.4); border: 1px solid #333; border-top: 2px solid {{color}}; padding: 6px 8px; border-radius: 3px; text-align: center;">
+                                <div style="font-size: 0.75em; color: #aaa; text-transform: uppercase; margin-bottom: 4px;">{{label}}</div>
+                                <div style="font-size: 1.15em; font-weight: bold; color: {{color}};">{{hitPct}}% Hit <span style="font-size: 0.75em; color: #ffcc00;">({{critPct}}% Crit)</span></div>
+                                <div style="font-size: 0.75em; color: #777; margin-top: 2px;">{{hits}} / {{total}} Landed</div>
+                            </div>
+                            {{/each}}
+                        </div>
+                        {{/if}}
 
                         {{#if abilityBreakdown.length}}
                         <div style="text-align: center; color: #ffaa00; font-weight: bold; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px;">
